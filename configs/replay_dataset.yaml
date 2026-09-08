@@ -1,0 +1,21 @@
+collection:
+  game_executable: C:/Users/Administrator/Desktop/SITIMU/【完整包】非想天则整合包2025-12-21/th123/th123.exe
+  replay_dir: ../tools/sokureplays_get/soku_dataset/replays
+  capture_dir: data/captured_replays_resources_v4
+  speed: 64
+  workers: 3
+data:
+  raw_dir: data/captured_replays_resources_v4
+  output_dir: data/replay_shards_resources_v4
+  suika_character_id: 9
+  nearest_projectiles_per_side: 3
+  valid_match_states: [2]
+  valid_battle_sub_modes: [2]
+  action_shift: 1
+  # 不同 Replay 可并行转换；机械硬盘建议 2，SSD 建议 3～6。
+  conversion_workers: 4
+  # 1 为快速压缩，仍输出标准 NPZ；0 最快但文件会明显增大。
+  npz_compression_level: 0
+reward:
+  damage_dealt: 0.001
+  damage_taken: 0.001

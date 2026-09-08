@@ -1,0 +1,53 @@
+seed: 42
+data:
+  directory: data/replay_shards_resources_v4
+  split_file: data/train_val_split_resources_v4.json
+  train_fraction: 0.8
+  cache_gb: 4.0
+  # SokuLib 原始垂直输入正值向下；九宫格编号始终相对屏幕，不随角色朝向翻转。
+  vertical_positive_is_down: true
+model:
+  current_hidden_dim: 256
+  object_hidden_dim: 64
+  object_set_dim: 128
+  fusion_dim: 256
+  gru_hidden_dim: 128
+  q_hidden_dim: 128
+  object_embedding_mode: separate
+  # 资源与上一帧实际控制历史直接进入 Current Encoder；主干宽度不增加。
+  skill_embedding_dim: 8
+  skill_level_embedding_dim: 4
+  previous_action_embedding_dim: 32
+  card_vocab_size: 512
+  card_embedding_dim: 16
+training:
+  device: auto
+  total_steps: 100000
+  batch_size: 32
+  sequence_length: 32
+  burn_in: 16
+  replays_per_batch: 4
+  learning_rate: 0.0001
+  gamma: 0.99
+  cql_alpha: 1.0
+  cql_temperature: 1.0
+  target_tau: 0.005
+  max_grad_norm: 10.0
+  weight_decay: 0.0001
+  log_interval: 20
+  save_interval: 1000
+  validation_interval: 1000
+  validation_batches: 20
+  cpu_threads: 4
+  amp: true
+  prefetch_batches: 2
+  frozen_modules: []
+output:
+  directory: outputs/cql_suika_joint432_v3
+web:
+  # 默认只监听服务器本机，通过 SSH 转发后用 http://localhost:8776/ 访问；无 token。
+  # 如需可信局域网直接访问，可显式改为 0.0.0.0。
+  host: 127.0.0.1
+  # PPO 使用 8766；本项目从 8776 开始，冲突时自动寻找后续可绑定端口。
+  port: 8776
+  port_attempts: 30

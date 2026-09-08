@@ -1,0 +1,4 @@
+# 跨 Windows / Linux 同步源代码时统一换行，Windows 批处理保留 CRLF。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
