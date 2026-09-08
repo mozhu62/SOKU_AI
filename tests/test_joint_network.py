@@ -58,6 +58,7 @@ class JointNetworkTests(unittest.TestCase):
 
         learner = Learner.__new__(Learner)
         learner.config = copy.deepcopy(DEFAULTS)
+        learner.config["training"]["n_step"] = 1
         learner.amp, learner.device = False, torch.device("cpu")
         online = torch.zeros(1, 3, 432)
         online[0, 1, 7], online[0, 2, 9] = 10, 10
@@ -66,15 +67,16 @@ class JointNetworkTests(unittest.TestCase):
         target[0, 2, 9] = 4
         learner.online, learner.target = FixedNetwork(online, True), FixedNetwork(target, False)
         batch = {"observation": {}, "burn_lengths": torch.zeros(1, dtype=torch.long),
-                 "joint_action_id": torch.tensor([[0, 1]]), "rewards": torch.tensor([[2.0, 999.0]]),
-                 "terminated": torch.tensor([[False, False]]), "mask": torch.tensor([[True, False]])}
+                 "joint_action_id": torch.tensor([[0, 1]]), "n_step_returns": torch.tensor([[2.0, 999.0]]),
+                 "n_step_steps": torch.tensor([[1, 0]]), "bootstrap_indices": torch.tensor([[1, 2]]),
+                 "bootstrap_discounts": torch.tensor([[0.99, 0.0]]), "mask": torch.tensor([[True, False]])}
         loss, parts = learner.losses(batch)
         torch.testing.assert_close(parts["target"], torch.tensor([2 + 0.99 * 3]))
         self.assertEqual(len(parts["q"]), 1)
         loss.backward()
         self.assertIsNone(learner.target.q.grad)
         self.assertTrue(torch.isfinite(learner.online.q.grad).all())
-        batch["terminated"][0, 0] = True
+        batch["bootstrap_discounts"][0, 0] = 0
         _, parts = learner.losses(batch)
         torch.testing.assert_close(parts["target"], torch.tensor([2.0]))
 
@@ -83,7 +85,9 @@ class JointNetworkTests(unittest.TestCase):
         values = torch.tensor([1.0, 2.0, 3.0])
         joint = torch.zeros(3, 432).scatter(-1, labels[:, None], values[:, None])
         parts = {"q": values, "target": values, "gap": torch.ones(3), "td_loss": torch.tensor(0.0),
-                 "joint_q": joint, "joint_labels": labels}
+                 "joint_q": joint, "joint_labels": labels, "n_step_steps": torch.tensor([5, 3, 1]),
+                 "n_step_full": torch.tensor([True, False, False]),
+                 "bootstrap_active": torch.tensor([True, True, False])}
         result = Learner.metrics(parts)
         self.assertEqual(result["td_mse"], 0)
         self.assertEqual(result["td_mae"], 0)
@@ -91,6 +95,9 @@ class JointNetworkTests(unittest.TestCase):
         self.assertEqual(result["joint_accuracy"], 1)
         self.assertAlmostEqual(result["neutral_data_fraction"], 1/3)
         self.assertEqual(len(result["joint_pred"]), 432)
+        self.assertEqual(result["n_step_mean"], 3)
+        self.assertAlmostEqual(result["n_step_full_fraction"], 1/3)
+        self.assertAlmostEqual(result["bootstrap_fraction"], 2/3)
         self.assertIn("action", result["joint_data_top"][0])
         parts["target"] = torch.ones(3)
         self.assertIsNone(Learner.metrics(parts)["ev"])

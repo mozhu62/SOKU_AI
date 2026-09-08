@@ -29,6 +29,8 @@ training:
   replays_per_batch: 4
   learning_rate: 0.0001
   gamma: 0.99
+  # 沿 REP 连续转移累计 N 帧奖励；1 恢复单步，终局/断帧处自动缩短。
+  n_step: 5
   cql_alpha: 1.0
   cql_temperature: 1.0
   target_tau: 0.005

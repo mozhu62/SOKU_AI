@@ -6,7 +6,7 @@
 - 动作 schema：soku_controller_joint432_v1。
 - 观测 schema：soku_cql_joint432_observation_v1。
 
-从随机参数开始，旧 CQL / PPO / DQN checkpoint 明确拒绝，不做部分迁移。旧文件保留。没有宏动作、Actor/Critic、GAE、Attention、人工威胁特征或专家 margin。本次 gamma、奖励定义和每侧最多 3 个对象的规则均未修改。
+新训练从随机参数开始，旧双头 CQL / PPO / DQN checkpoint 明确拒绝，不做部分迁移；同结构 Joint432 模型可以续训。旧文件保留。没有宏动作、Actor/Critic、GAE、Attention、人工威胁特征或专家 margin。N 步 TD 更新没有修改 gamma、奖励定义和每侧最多 3 个对象的规则。
 
 ## 完整 Controller State
 
@@ -93,14 +93,20 @@ action_duration只表示水平/垂直组合持续帧数，按钮变化不重置�
 
 ```text
 q_data = gather(Q_online(s), dataset_joint_action_id)
-a_next = argmax(Q_online(s_next), 432个动作)
-y = reward + gamma × (1 - terminated) × Q_target(s_next, a_next)
+k = min(n_step, 连续片段内直到终局/末端的剩余转移数)
+R_k = sum(gamma^i × reward[t+i], i=0..k-1)
+a_next = argmax(Q_online(s[t+k]), 432个动作)
+y = R_k + gamma^k × (1 - terminated_within_k) × Q_target(s[t+k], a_next)
 TD = mean(Huber(q_data, stop_gradient(y)))
 CQL = mean(T × logsumexp(Q_online(s)/T, 432个动作) - q_data)
 loss = TD + cql_alpha × CQL
 ```
 
 目标网络是一套完整网络，初始复制online、禁用梯度；有效优化后继续target_tau软更新。TD/CQL共用有效mask。不再有分项Q、六按钮loss或可加Q分解。T只用于CQL保守项，推理直接argmax。
+
+TD 已改为可配置 N 步，默认 N=5，设为 1 等价于原单步。真终局不 bootstrap；非终局断点缩短到实际 k 后从已观测的末状态 bootstrap。输入序列为 `burn_in + sequence_length + n_step` 个状态，在线和目标 GRU 分别保留完整因果历史；仅前 `sequence_length` 个主序列位置参与损失，其余是前瞻状态。上一帧控制历史与当前标签的隔离不变。
+
+此次没有改 gamma、即时奖励、对象数量、网络结构或权重形状。现有 Joint432 checkpoint 可以续训，无需重新转 NPZ；仅 `--resume` 仍沿用 checkpoint 的 N（历史缺字段为 1），指定新版 YAML 才切到其配置的 N。目标与阶段记录及启动指令见[离线训练说明](offline_training.md#n-步设置与续训)。
 
 ## 诊断与使用
 

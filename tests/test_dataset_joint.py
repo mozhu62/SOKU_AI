@@ -147,7 +147,8 @@ class DatasetJointTests(unittest.TestCase):
         store.info = {"one": {"transitions": 4}}
         store.get = lambda name: shard
         batch = store.sample(np.random.default_rng(1), {"batch_size": 3, "sequence_length": 3,
-                                                       "burn_in": 2, "replays_per_batch": 1})
+                                                       "burn_in": 2, "replays_per_batch": 1,
+                                                       "n_step": 5, "gamma": 0.99})
         self.assertIn("joint_action_id", batch)
         self.assertNotIn("directions", batch)
         self.assertNotIn("buttons", batch)

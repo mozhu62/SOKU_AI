@@ -25,7 +25,7 @@ DEFAULTS = {
     "model": MODEL_DEFAULTS,
     "training": {"device": "auto", "total_steps": 100000, "batch_size": 32,
                  "sequence_length": 32, "burn_in": 16, "replays_per_batch": 4,
-                 "learning_rate": 0.0001, "gamma": 0.99, "cql_alpha": 1.0,
+                 "learning_rate": 0.0001, "gamma": 0.99, "n_step": 5, "cql_alpha": 1.0,
                  "cql_temperature": 1.0, "target_tau": 0.005, "max_grad_norm": 10.0,
                  "weight_decay": 0.0001, "log_interval": 20, "save_interval": 1000,
                  "validation_interval": 1000, "validation_batches": 20,
@@ -38,6 +38,7 @@ MODULES = ("current_encoder", "object_encoder", "fusion", "gru", "memory_fusion"
 EDITABLE = {
     "learning_rate": (1e-8, 0.01, "float", "学习率"),
     "gamma": (0.0, 1.0, "float", "折扣 γ（每游戏帧）"),
+    "n_step": (1, 120, "int", "TD 回报步数 N（1 恢复单步）"),
     "cql_alpha": (0.0, 100.0, "float", "CQL 保守项系数"),
     "cql_temperature": (0.01, 10.0, "float", "CQL logsumexp 温度"),
     "target_tau": (0.000001, 1.0, "float", "目标网络软更新系数"),

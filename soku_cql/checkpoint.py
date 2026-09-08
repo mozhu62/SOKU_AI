@@ -9,6 +9,7 @@ import torch
 from .config import NETWORK_VERSION
 from .action_space import ACTION_SCHEMA
 from .schema import policy_input_manifest
+from .n_step import target_spec
 
 
 def load(path: Path):
@@ -24,6 +25,11 @@ def load(path: Path):
     if (package["spec"].get("action_schema") != ACTION_SCHEMA or
             package["spec"].get("inputs") != policy_input_manifest()):
         raise ValueError("checkpoint action/observation schema 不兼容，不允许部分加载")
+    # 仅补齐内存中的历史配置，不改磁盘文件或权重；显式 YAML 才切换到新的 N。
+    package["config"]["training"].setdefault("n_step", 1)
+    saved_target = package.get("td_target")
+    if saved_target is not None and saved_target != target_spec(package["config"]["training"]):
+        raise ValueError("checkpoint 的 TD 目标版本或 N/gamma 与保存配置不一致")
     return package
 
 
@@ -41,7 +47,8 @@ def save(path, learner, config, split, normalization, step, updates, samples, be
     package = {"network_version": learner.online.spec["network_version"], "spec": learner.online.spec,
                "online": cpu(learner.online.state_dict()), "target": cpu(learner.target.state_dict()),
                "optimizer": cpu(learner.optimizer.state_dict()), "scaler": learner.scaler.state_dict(),
-               "config": config, "split_hash": split["sha256"], "normalization": normalization,
+               "config": config, "td_target": target_spec(config["training"]),
+               "split_hash": split["sha256"], "normalization": normalization,
                "step": step, "updates": updates, "samples": samples, "best": best, "stage": stage,
                "rng_cpu": torch.get_rng_state(),
                "rng_cuda": torch.cuda.get_rng_state_all() if learner.device.type == "cuda" else []}

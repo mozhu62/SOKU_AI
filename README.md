@@ -29,7 +29,7 @@ python scripts/play.py
 
 ## 离线训练入口
 
-训练直接读取 `data/replay_shards_resources_v4/*.npz`，不会启动游戏。网络包含状态编码、对象编码、双方技能/卡牌资源编码、融合 MLP 和 GRU，参数从零随机初始化。唯一 Joint Q 头输出 432 个完整逐帧动作 Q；Current Encoder 接收 Skill/Card 和上一帧实际 Controller Action。训练采用真正的联合离散 CQL。旧 CQL checkpoint 也明确拒绝加载，本版从随机初始化开始。当前默认模型目录为 `outputs/cql_suika_joint432_v3`，完整结构见 [模型架构](docs/model_architecture.md)，资源接入见 [资源模型](docs/resource_model.md)。
+训练直接读取 `data/replay_shards_resources_v4/*.npz`，不会启动游戏。网络包含状态编码、对象编码、双方技能/卡牌资源编码、融合 MLP 和 GRU，新训练参数从零随机初始化。唯一 Joint Q 头输出 432 个完整逐帧动作 Q；Current Encoder 接收 Skill/Card 和上一帧实际 Controller Action。训练采用真正的联合离散 CQL。旧双头 CQL checkpoint 明确拒绝加载；现有 Joint432 模型可以续训，包括从单步切换到 N 步 TD。当前默认模型目录为 `outputs/cql_suika_joint432_v3`，完整结构见 [模型架构](docs/model_architecture.md)，资源接入见 [资源模型](docs/resource_model.md)。
 
 在 `soku_cql` 目录安装 Python 依赖与构建工作台（由使用者执行）：
 
@@ -55,6 +55,18 @@ python scripts/train.py --config configs/cql_suika.yaml --headless
 ```text
 python scripts/train.py --resume outputs/cql_suika_joint432_v3/last.pt
 ```
+
+### N 步 TD
+
+当前 TD 默认累计 **5 步**折扣奖励，配置项为 `training.n_step`（1～120）；设为 1 恢复单步。终局停止估值，断帧/片段边界自动缩短，不跨局。网络、432 个动作、即时奖励和 gamma 均不变，不需要重新生成 NPZ。
+
+从已有 Joint432 单步模型切换到新 YAML 的 N 步设置，必须同时指定配置；只用 `--resume` 会继续沿用该 checkpoint 的设置（历史缺少 N 的按 1 处理）：
+
+```text
+python scripts/train.py --config configs/cql_suika.yaml --resume outputs/cql_suika_joint432_v3/last.pt
+```
+
+无网页立即运行加 `--headless`。工作台也可在暂停后修改「TD 回报步数 N」；变更后会标记新阶段，验证 MSE 不和旧 N 的阶段混比。公式、边界、日志字段与离线 N 步的限制见[训练说明](docs/offline_training.md#n-步设置与续训)。
 
 另开随机初始化实验：
 

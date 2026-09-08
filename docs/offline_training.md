@@ -29,7 +29,7 @@ action=(direction 1～9, combat_mask 0～15, card_command 0～2)，joint ID=(dir
 
 当前observation仅加入previous_joint_action_id及上一帧方向组合持续时间clip60/60，不加入当前标签。START/PAD=432；Embedding(433,32)。技能slot使用variant8D、两个level各4D；Card ID双方所有槽共享16D并按槽concat。主干宽度不扩大，每侧对象仍最多3个。
 
-网络soku_cql_recurrent_joint432_v3完全随机初始化；目标网络复制online。旧CQL/PPO/DQN checkpoint全部拒绝，包括实战，不做部分加载。默认独立目录outputs/cql_suika_joint432_v3。
+网络soku_cql_recurrent_joint432_v3在新训练时完全随机初始化；目标网络复制online。旧双头CQL/PPO/DQN checkpoint全部拒绝，包括实战，不做部分加载；同结构Joint432 checkpoint可续训。默认独立目录outputs/cql_suika_joint432_v3。
 
 ## 离线 CQL 更新
 
@@ -38,8 +38,10 @@ action=(direction 1～9, combat_mask 0～15, card_command 0～2)，joint ID=(dir
 更新使用：
 
 ```text
-a* = argmax_a Q_online(s_next,a)
-y  = r + gamma * (1 - terminated) * Q_target(s_next,a*)
+k  = min(n_step, 到连续片段末端或首次终局的有效转移数)
+R  = r[t] + gamma*r[t+1] + ... + gamma^(k-1)*r[t+k-1]
+a* = argmax_a Q_online(s[t+k],a)
+y  = R + gamma^k * (1 - terminated_within_k) * Q_target(s[t+k],a*)
 TD = mean(Huber(Q_online(s,a_dataset), stop_gradient(y)))
 
 CQL = mean(T * logsumexp_a(Q_online(s,a)/T) - Q_online(s,a_dataset))
@@ -48,15 +50,41 @@ loss = TD + cql_alpha * CQL
 
 保守项直接对同次前向输出的全部432个完整动作计算logsumexp，不做可加分解。cql_temperature只用于保守项，不是策略温度；网络末层没有softmax，推理直接argmax。
 
-在线网络负责下一动作选择，目标网络负责下一动作评分，目标值停止梯度。每次有效优化后按 `target_tau` 软更新目标网络。AMP 梯度溢出时跳过优化器和目标网络更新，并记录 `optimizer_skipped`。
+在线网络负责第 k 步状态的动作选择，目标网络负责该动作评分，目标值停止梯度。每次有效优化后按 `target_tau` 软更新目标网络。AMP 梯度溢出时跳过优化器和目标网络更新，并记录 `optimizer_skipped`。这次以 N 步 TD 替换单步 TD，并非同时叠加两份 TD 损失；没有增加 PER 或专家间隔项。
 
-奖励直接使用 NPZ 的 `rewards`；当前转换器的奖励由双方 HP 变化计算。训练 YAML 不会偷偷覆盖已存奖励，也不会添加在线奖励。`gamma` 是每个相邻游戏帧的折扣，延迟命中的回报通过多次 Bellman 更新往前传播。
+奖励直接使用 NPZ 的 `rewards`；当前转换器的奖励由双方 HP 变化计算。训练 YAML 不会偷偷覆盖已存奖励，也不会添加在线奖励。`gamma` 仍是每个相邻游戏帧的折扣，默认 0.99 不变。N 步回报在采样时计算，不修改 NPZ 或固定划分，不用重新采集或转换数据。
+
+### N 步设置与续训
+
+默认 `training.n_step: 5`，可在 YAML 或工作台的「TD 回报步数 N」中设置 1～120 的整数。5 步约为 5 个游戏帧（60 FPS 下约 0.083 秒），不是 5 套招式，也不是 5 次优化。`n_step: 1` 恢复原单步目标；`sequence_length: 32` 仍然表示每条序列最多 32 个学习位置，与 N 是不同的参数。
+
+例如 N=5 时，位置 t 使用 t～t+4 的折扣奖励，加上第 t+5 状态的估值。终局发生在其中时，计入终局转移奖励后停止，不再加估值；如果只是数据断点或非终局片段结束，就缩短到实际 k 步，并使用已经观测到的片段末状态估值，不跨断点补齐。
+
+这使用 REP 的真实后续动作所产生的奖励，是未经重要性修正的离线 N 步目标。更大的 N 可以让窗口内的延迟奖励直接传到较早动作，但也更依赖专家后续行为、增加方差和前向计算量，并不保证越大越好。没有增加 Retrace、策略校正或奖励来源的人工回填。
+
+当前 Joint432 网络和权重形状不变，可以继续训练已有 Joint432 checkpoint。旧的双头 CQL/PPO/DQN 模型仍不兼容。**只写 `--resume` 时尊重 checkpoint 配置；历史文件缺少 `n_step` 时按 1 处理，不会暗中变成 5。** 切换旧单步模型到这份 YAML 的 5 步配置：
+
+```text
+python scripts/train.py --config configs/cql_suika.yaml --resume outputs/cql_suika_joint432_v3/last.pt
+```
+
+需要服务器无网页立即训练，在命令末尾加 `--headless`。参数应用必须暂停后进行，会清空旧的预取批次、保留模型与优化器、保存配置快照，并开启新阶段重新比较最佳验证值；新旧 N 的 MSE 不应直接比较。换 N 不改变模型推理接口和游戏控制。
+
+启动日志打印 `N` 与 `gamma`；记录步打印 `effective_N`（有效样本实际回报步数均值）。`metrics.jsonl` 的训练和验证记录、checkpoint 的 `td_target` 均保存目标版本 `segment_n_step_double_dqn_v1`、`n_step` 和 `gamma`。新增诊断字段：
+
+| 字段 | 含义 |
+|---|---|
+| n_step_mean | 有效学习位置实际 k 的均值，不含 padding |
+| n_step_full_fraction | 实际 k 等于配置 N 的样本占比；在第 N 步终局也计为完整 N 步 |
+| bootstrap_fraction | 最终 bootstrap 折扣大于零的样本占比；gamma=0 时为零 |
+
+旧日志不回填这些指标。验证 TD MSE、MAE、EV 现在针对同一套 N 步目标计算，损失仍是 Huber + CQL。
 
 ## 样本、序列与有效性
 
-默认一次批次含 32 条序列，每条最多 32 个学习转移，以及最多 16 帧 burn-in 与最后一个下一状态。完整序列的输入跨度最多 49 个游戏状态帧，32 个学习转移约为游戏时间 0.53 秒（60 FPS）。
+默认一次批次含 32 条序列，每条最多 32 个学习转移，以及最多 16 帧 burn-in 和 5 个尾部前瞻状态。完整序列的输入跨度最多 `16+32+5=53` 个游戏状态帧，32 个学习转移约为游戏时间 0.53 秒（60 FPS）。前瞻区支持学习窗口最后一个位置的 N 步目标，不额外计入动作统计、样本数或 TD/CQL 损失。
 
-随机选择一个有效转移作为学习起点，向前取同片段 burn-in 恢复记忆，向后取学习序列。burn-in 停止梯度。若临近片段起点，使用真实的前导长度与零初始记忆；补齐不能产生虚假历史。后端使用 packed GRU 处理不同 burn-in 长度。
+随机选择一个有效转移作为学习起点，向前取同片段 burn-in 恢复记忆，向后取学习序列及 N 步前瞻。在线与目标网络各自的 GRU 按顺序处理这些状态，在正确的 t+k 位置取得 Q，不跳过中间历史。burn-in 停止梯度。若临近片段起点，使用真实的前导长度与零初始记忆；补齐不能产生虚假历史。后端使用 packed GRU 处理不同 burn-in 长度。
 
 片段结束、非连续转移、回合边界和终局都会切断序列。短片段右侧补齐，并用 loss mask 排除补齐位置；TD 和 CQL 使用相同有效 mask。终局下一状态可用于配对，但 bootstrap 为零。非终局片段末端仅在当前转移及下一状态有效时 bootstrap，不跨缺帧拼接。
 
@@ -97,6 +125,7 @@ loss = TD + cql_alpha * CQL
 | amp | true | GPU 混合精度，CPU 不启用 |
 | learning_rate | 0.0001 | AdamW 学习率 |
 | gamma | 0.99 | 每帧 Bellman 折扣 |
+| n_step | 5 | 累计奖励的最大连续转移数；1 恢复单步，范围 1～120 |
 | cql_alpha | 1 | 保守正则强度；0 退化为这里的 Double DQN TD 目标 |
 | cql_temperature | 1 | CQL logsumexp 温度 |
 | target_tau | 0.005 | 目标参数向在线参数靠近的比例 |

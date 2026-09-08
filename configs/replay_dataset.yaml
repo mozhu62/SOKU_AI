@@ -17,5 +17,5 @@ data:
   # 1 为快速压缩，仍输出标准 NPZ；0 最快但文件会明显增大。
   npz_compression_level: 0
 reward:
-  damage_dealt: 0.001
-  damage_taken: 0.001
+  damage_dealt: 0.01
+  damage_taken: 0.01

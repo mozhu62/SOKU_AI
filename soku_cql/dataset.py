@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import resolve
+from .n_step import build_n_step_targets
 from .schema import manifest, CARD_NUMERICAL_INDICES, OPTIONAL_STATE_FEATURES
 from .action_space import (
     ACTION_SCHEMA, ACTION_COUNT, NEUTRAL_ACTION_ID, CARD_OVERLAP_POLICY,
@@ -310,6 +311,7 @@ class ReplayStore:
         names = self.split[split]
         weights = np.asarray([self.info[name]["transitions"] for name in names], np.float64)
         batch, length, burn = cfg["batch_size"], cfg["sequence_length"], cfg["burn_in"]
+        n_step = cfg["n_step"]
         # 每批从少量随机 REP 中取多段序列，减少压缩分片重复解压；跨批仍按转移数加权抽样。
         chosen = rng.choice(len(names), min(batch, cfg["replays_per_batch"]), p=weights / weights.sum())
         sizes = np.array_split(np.arange(batch), len(chosen))
@@ -323,7 +325,9 @@ class ReplayStore:
             positions = starts + picks - previous
             burn_lengths = np.minimum(burn, positions - starts)
             prefix = positions[:, None] - burn_lengths[:, None] + np.arange(burn)
-            main = positions[:, None] + np.arange(length + 1)
+            # 尾部额外读取 N 个状态，让最后一个学习位置也拥有完整 N 步目标和 GRU 历史。
+            # 尾部只提供回报及 bootstrap，不增加参与 TD/CQL 损失的动作标签。
+            main = positions[:, None] + np.arange(length + n_step)
             indices = np.concatenate((np.minimum(prefix, positions[:, None]), np.minimum(main, ends[:, None])), 1)
             observation = self.observation(shard, indices)
             labels = np.minimum(positions[:, None] + np.arange(length), ends[:, None])
@@ -331,7 +335,8 @@ class ReplayStore:
                             "joint_action_id": shard["joint_action_id"][labels],
                             "rewards": shard["rewards"][labels].astype(np.float32),
                             "terminated": shard["terminated"][labels].astype(bool),
-                            "mask": positions[:, None] + np.arange(length) < ends[:, None]})
+                            **build_n_step_targets(shard["rewards"], shard["terminated"], positions,
+                                                   ends, length, n_step, cfg["gamma"])})
         result = {key: np.concatenate([item[key] for item in batches]) for key in batches[0] if key != "observation"}
         result["observation"] = {key: np.concatenate([item["observation"][key] for item in batches])
                                  for key in batches[0]["observation"]}

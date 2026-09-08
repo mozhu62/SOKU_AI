@@ -77,18 +77,28 @@ class Learner:
                 target_q = self.target(batch["observation"], cfg["burn_in"], batch["burn_lengths"])
         # logsumexp、Bellman 目标及损失使用 float32，避免 AMP 下指数和回报溢出。
         joint_q = joint_q.float()
-        data_q = selected_q(joint_q[:, :-1], batch["joint_action_id"])
+        length = batch["joint_action_id"].shape[1]
+        current_q = joint_q[:, :length]
+        data_q = selected_q(current_q, batch["joint_action_id"])
         with torch.no_grad():
-            # Double DQN：在线网络选择一个完整 next action，目标网络只评价该 ID。
-            next_q = selected_q(target_q[:, 1:].float(), joint_q[:, 1:].argmax(-1))
-            target = batch["rewards"] + cfg["gamma"] * (~batch["terminated"]).float() * next_q
+            # Double DQN 在 t+k 而非 t+1 选动作；在线与目标 GRU 都已经读过中间真实状态。
+            indices = batch["bootstrap_indices"].unsqueeze(-1).expand(-1, -1, ACTION_COUNT)
+            online_next = joint_q.gather(1, indices)
+            target_next = target_q.float().gather(1, indices)
+            next_q = selected_q(target_next, online_next.argmax(-1))
+            discounts = batch["bootstrap_discounts"]
+            # 真终局与 padding 不使用 Q，避免 0 × 无效 Q 污染本来不应 bootstrap 的目标。
+            target = batch["n_step_returns"] + discounts * torch.where(discounts > 0, next_q, 0.0)
         mask = batch["mask"]
         q, y = data_q[mask], target[mask]
-        gap = conservative_gap(joint_q[:, :-1], data_q, cfg["cql_temperature"])[mask]
+        gap = conservative_gap(current_q, data_q, cfg["cql_temperature"])[mask]
         td_loss = F.smooth_l1_loss(q, y)
         loss = td_loss + cfg["cql_alpha"] * gap.mean()
         return loss, {"q": q, "target": y, "gap": gap, "td_loss": td_loss,
-                      "joint_q": joint_q[:, :-1][mask], "joint_labels": batch["joint_action_id"][mask]}
+                      "joint_q": current_q[mask], "joint_labels": batch["joint_action_id"][mask],
+                      "n_step_steps": batch["n_step_steps"][mask],
+                      "n_step_full": (batch["n_step_steps"][mask] == cfg["n_step"]),
+                      "bootstrap_active": (batch["bootstrap_discounts"][mask] > 0)}
 
     @staticmethod
     def metrics(parts):
@@ -103,10 +113,13 @@ class Learner:
                                y.mean(), y.std(unbiased=False), variance, errors.var(unbiased=False),
                                (prediction == labels).float().mean(), q_max.mean(), q_max.std(unbiased=False),
                                (q_max - q).mean(), (labels == NEUTRAL_ACTION_ID).float().mean(),
-                               (prediction == NEUTRAL_ACTION_ID).float().mean())).cpu().tolist()
+                               (prediction == NEUTRAL_ACTION_ID).float().mean(),
+                               parts["n_step_steps"].float().mean(), parts["n_step_full"].float().mean(),
+                               parts["bootstrap_active"].float().mean())).cpu().tolist()
         keys = ("td_loss", "cql_gap", "td_mse", "td_mae", "q_data_mean", "q_data_std", "q_abs_max", "target_mean",
                 "target_std", "target_variance", "error_variance", "joint_accuracy", "q_max_mean", "q_max_std",
-                "q_max_minus_q_data", "neutral_data_fraction", "neutral_pred_fraction")
+                "q_max_minus_q_data", "neutral_data_fraction", "neutral_pred_fraction",
+                "n_step_mean", "n_step_full_fraction", "bootstrap_fraction")
         result = dict(zip(keys, scalars))
         result["ev"] = 1 - result["error_variance"] / result["target_variance"] if result["target_variance"] > 1e-8 else None
         result["samples"] = len(q)

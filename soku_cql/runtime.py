@@ -17,6 +17,7 @@ from .action_space import ACTION_SCHEMA, action_catalog, frequency_rows
 from .config import EDITABLE, resolve, validate
 from .dataset import ReplayStore, split_replays
 from .learner import Learner
+from .n_step import target_spec
 from .prefetch import BatchPrefetch
 from .storage import atomic_json
 
@@ -107,7 +108,8 @@ class Runtime:
             self.state["last_request"] = copy.deepcopy(row)
 
     def _record(self, kind, values):
-        row = {**values, "action_schema": ACTION_SCHEMA, "kind": kind, "step": self.step, "stage": self.stage, "time": time.time()}
+        row = {**values, **target_spec(self.config["training"]), "action_schema": ACTION_SCHEMA,
+               "kind": kind, "step": self.step, "stage": self.stage, "time": time.time()}
         with (self.output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
         with self.lock:
@@ -236,13 +238,15 @@ class Runtime:
         result["joint_pred_top"] = frequency_rows(result["joint_pred"])
         result.update(samples=count, ev=1 - error_variance / variance if variance > 1e-8 else None,
                       batches=len(rows), seconds=time.perf_counter() - started,
-                      selection_metric="validation_td_mse_v1", step=self.step, stage=self.stage)
+                      selection_metric="validation_td_mse_v1", step=self.step, stage=self.stage,
+                      **target_spec(cfg))
         self.timings["validation"] += result["seconds"]
         self._record("validation", result)
         self.publish(latest_validation=result, timings=self.timings)
         # 仅代表当前实验阶段的离线 Bellman 拟合；不宣称它是实战最强模型。
         if self.best is None or result["td_mse"] < self.best["value"]:
-            self.best = {"metric": "validation_td_mse_v1", "value": result["td_mse"], "step": self.step, "stage": self.stage}
+            self.best = {"metric": "validation_td_mse_v1", "value": result["td_mse"], "step": self.step,
+                         "stage": self.stage, **target_spec(cfg)}
             self._save("best.pt")
             self._save(f"best_stage_{self.stage}.pt")
             self.publish(best=self.best)
@@ -256,6 +260,10 @@ class Runtime:
             if self.resume_path is None and (self.output / "last.pt").exists():
                 raise ValueError("输出目录已有模型；续训请指定 --resume，随机新训练请使用 --output 新目录")
             package = checkpoint.load(self.resume_path) if self.resume_path else None
+            if package and target_spec(package["config"]["training"]) != target_spec(self.config["training"]):
+                LOGGER.info("TD 目标切换：N=%d → %d，gamma=%s → %s；保留权重和优化器，验证另起阶段",
+                            package["config"]["training"]["n_step"], self.config["training"]["n_step"],
+                            package["config"]["training"]["gamma"], self.config["training"]["gamma"])
             split_path = resolve(self.config["data"]["split_file"])
             split_path.parent.mkdir(parents=True, exist_ok=True)
             with FileLock(str(split_path) + ".lock", timeout=0):
@@ -265,6 +273,8 @@ class Runtime:
             if self.stop_event.is_set():
                 raise InterruptedError("数据准备已取消")
             self.learner = Learner(self.config)
+            LOGGER.info("TD 目标：N=%d，gamma=%s；终局停止 bootstrap，非终局片段末端缩短回报后 bootstrap",
+                        self.config["training"]["n_step"], self.config["training"]["gamma"])
             if package:
                 for key in ("model", "seed"):
                     if package["config"][key] != self.config[key]:
@@ -344,11 +354,12 @@ class Runtime:
                                   learning_rate=cfg["learning_rate"], cql_alpha=cfg["cql_alpha"],
                                   cache_gb=self.store.bytes / 1024 ** 3,
                                   cache_hit_rate=self.store.hits / max(1, self.store.hits + self.store.misses),
-                                  step=self.step, stage=self.stage)
+                                  step=self.step, stage=self.stage, **target_spec(cfg))
                     self._record("train", result)
                     self.publish(latest_train=result, timings=self.timings)
-                    LOGGER.info("step=%d/%d loss=%.5f TD=%.5f CQL=%.5f speed=%.2f step/s",
-                                self.step, cfg["total_steps"], result["loss"], result["td_mse"], result["cql_gap"], result["steps_per_second"])
+                    LOGGER.info("step=%d/%d N=%d effective_N=%.2f loss=%.5f TD=%.5f CQL=%.5f speed=%.2f step/s",
+                                self.step, cfg["total_steps"], cfg["n_step"], result["n_step_mean"],
+                                result["loss"], result["td_mse"], result["cql_gap"], result["steps_per_second"])
                 self.publish(step=self.step, updates=self.updates, samples=self.samples)
                 if self.step % cfg["validation_interval"] == 0:
                     self._validate()
