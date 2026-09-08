@@ -31,6 +31,16 @@ class LiveHistoryTests(unittest.TestCase):
         self.assertEqual(history.previous_id, encode(4, 1, 0))
         self.assertAlmostEqual(history.previous_duration, 1/60)
 
+    def test_card_overlap_uses_same_cleaning_as_offline_history(self):
+        for shift in (0, 1):
+            history = ControllerHistory(shift)
+            history.observe((1, 0, 10), 6, [0, 0, 0, 0, 0, 0])
+            history.observe((1, 0, 11), 6, [1, 1, 0, 0, 1, 1])
+            if shift == 0:
+                history.observe((1, 0, 12), 6, [0, 0, 0, 0, 0, 0])
+            self.assertEqual(history.previous_id, encode(6, 3, 2))
+            self.assertAlmostEqual(history.previous_duration, 2/60)
+
 
 if __name__ == "__main__":
     unittest.main()

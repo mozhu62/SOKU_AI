@@ -5,6 +5,7 @@ import numpy as np
 from soku_cql.action_space import (
     ACTION_COUNT, START_ACTION_ID, NEUTRAL_ACTION_ID, encode, decode,
     to_controller, from_controller, from_raw_axes, action_name, previous_actions,
+    clean_card_overlap, validate_buttons, compact_actions,
 )
 
 
@@ -45,17 +46,61 @@ class ActionSchemaTests(unittest.TestCase):
         self.assertEqual(encode(5, 0, 0), NEUTRAL_ACTION_ID)
         self.assertNotEqual(NEUTRAL_ACTION_ID, START_ACTION_ID)
 
-    def test_invalid_values_and_conflicting_cards(self):
+    def test_invalid_values(self):
         for args in ((0, 0, 0), (10, 0, 0), (5, -1, 0), (5, 16, 0), (5, 0, 3), (5.5, 0, 0)):
             with self.subTest(args=args), self.assertRaisesRegex(ValueError, "action schema 不兼容"):
                 encode(*args)
         for value in (-1, 432, 1.5):
             with self.assertRaisesRegex(ValueError, "action schema 不兼容"):
                 decode(value)
-        values = np.zeros((4, 6), np.uint8)
-        values[-1, 4:] = 1
+        for buttons in (np.zeros(5), [0, 0, 0, 0, 0, 2], [0, 0, -1, 0, 0, 0], 0):
+            with self.subTest(buttons=buttons), self.assertRaisesRegex(ValueError, "六列 0/1"):
+                from_controller(5, buttons)
+
+    def test_card_overlap_keeps_use_and_all_combat_bits(self):
+        raw = ((np.arange(64)[:, None] >> np.arange(6)) & 1).astype(np.uint8)
+        original = raw.copy()
+        cleaned, overlap = clean_card_overlap(raw)
+        self.assertEqual(int(overlap.sum()), 16)
+        self.assertEqual(cleaned.dtype, raw.dtype)
+        np.testing.assert_array_equal(raw, original)
+        np.testing.assert_array_equal(cleaned[:, :4], raw[:, :4])
+        np.testing.assert_array_equal(cleaned[:, 5], raw[:, 5])
+        np.testing.assert_array_equal(cleaned[:, 4], raw[:, 4] & (1 - raw[:, 5]))
+        again, repeated = clean_card_overlap(cleaned)
+        self.assertFalse(repeated.any())
+        np.testing.assert_array_equal(again, cleaned)
+        for direction in range(1, 10):
+            encoded = from_controller(np.full(64, direction), raw)
+            decoded_direction, decoded_buttons = to_controller(encoded)
+            np.testing.assert_array_equal(decoded_direction, np.full(64, direction))
+            np.testing.assert_array_equal(decoded_buttons, cleaned)
+        for dtype in (np.bool_, np.uint8, np.int64, np.float32):
+            buttons = np.asarray([1, 1, 0, 0, 1, 1], dtype=dtype)
+            self.assertEqual(from_controller(6, buttons), encode(6, 3, 2))
+        # 清洗仅用于导入/回读，实际发键仍禁止输出双卡命令。
         with self.assertRaisesRegex(ValueError, "CHANGE_CARD 与 USE_CARD"):
-            from_controller(np.full(4, 5), values)
+            validate_buttons(raw)
+        validate_buttons(cleaned)
+
+    def test_compact_input_cleaning_keeps_axes_duration_and_alignment(self):
+        import pandas as pd
+
+        frame = pd.DataFrame({
+            "left_input_horizontal": [1, 2, 3, 4], "left_input_vertical": [0, 0, 0, 0],
+            "left_input_a": [0, 1, 0, 0], "left_input_d": [0, 1, 0, 0],
+            "left_input_b": [0, 0, 0, 0], "left_input_c": [0, 0, 0, 0],
+            "left_input_change_card": [1, 2, 0, 1], "left_input_spell_card": [0, 1, 0, 1],
+        })
+        original = frame.copy(deep=True)
+        source = np.asarray([1, 2, 3, 3])
+        h, v, duration, buttons = compact_actions(frame, "left", source, np.asarray([0, 0, 0, 1]))
+        np.testing.assert_array_equal(h, [1, 1, 1, 1])
+        np.testing.assert_array_equal(v, [0, 0, 0, 0])
+        np.testing.assert_array_equal(duration, [2, 3, 1, 1])
+        np.testing.assert_array_equal(buttons, [[1, 1, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0],
+                                               [0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]])
+        pd.testing.assert_frame_equal(frame, original)
 
     def test_history_has_no_current_label_and_resets(self):
         actions = np.asarray([10, 20, 30, 40, 50, 60, 70])

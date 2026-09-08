@@ -34,6 +34,14 @@ soku_cql/data/replay_shards_resources_v4/
 
 只训练已有 NPZ 时，不需要传 REP、CSV、游戏、DLL、`node_modules` 或旧 PPO/DQN 项目。
 
+从本机复制固定划分时，只能复制与上述资源版 NPZ 同批生成的：
+
+```text
+soku_cql/data/train_val_split_resources_v4.json
+```
+
+旧的 `data/train_val_split.json` 早于资源版 v4 数据，哈希不兼容，不能改名代替。也可以不传划分文件，在服务器安装项目依赖后执行 `python scripts/preprocess_replays.py --only-split`，由服务器对当前 NPZ 生成相同格式的固定划分。
+
 若服务器数据盘另有存放位置，可以复制配置模板为本机配置：
 
 ```bash
@@ -42,7 +50,7 @@ cp configs/cql_suika.yaml configs/cql_suika.local.yaml
 
 只修改副本中的 `data.directory`，再用 `--config configs/cql_suika.local.yaml` 启动。相对路径均以 `soku_cql` 项目目录为基准；数据目录可以是项目内的符号链接，具体数据不会随 Git 上传。
 
-首次训练由服务器创建固定 8:2 划分和归一化。如果搬迁已有训练并续训，除同一套 NPZ 外，还需单独复制匹配的划分 JSON 与新版完整 checkpoint，保持相对文件名及内容一致；这些文件也不经 Git。不能用重新划分代替原 checkpoint 对应的数据划分。
+预处理入口或首次训练会创建固定 8:2 划分，归一化则在训练加载数据时生成。如果搬迁已有训练并续训，除同一套 NPZ 外，还需单独复制匹配的划分 JSON 与新版完整 checkpoint，保持相对文件名及内容一致；这些文件也不经 Git。不能用重新划分代替原 checkpoint 对应的数据划分。
 
 ## 3. 服务器准备并启动前端服务
 

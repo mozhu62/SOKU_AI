@@ -21,7 +21,7 @@
 joint_action_id = (direction - 1) × 48 + combat_mask × 3 + card_command。
 共432类，ID为0～431。Neutral是“5 + 无战斗按钮 + NONE”，ID192；ID0是左下且无按钮。
 
-人类可读示例：5、6+A、6+D+A、2+B、5+USE_CARD、6+USE_CARD、4+CHANGE_CARD。展示顺序 D+A 不改变存储 bit 顺序 A/D/B/C。切卡与用卡同帧为1必须报 action schema 不兼容，不会合并、忽略或丢帧。
+人类可读示例：5、6+A、6+D+A、2+B、5+USE_CARD、6+USE_CARD、4+CHANGE_CARD。展示顺序 D+A 不改变存储 bit 顺序 A/D/B/C。原始切卡与用卡同帧为1时，按`prefer_use_card_v1`规则自动清除切卡，保留用卡、方向及四个战斗按钮，不删除帧；三类卡命令和432类输出不扩容。
 
 ## 主干与输出（默认维度）
 
@@ -114,4 +114,4 @@ python scripts/train.py --config configs/cql_suika.yaml --headless
 
 网页模式移除--headless。默认输出outputs/cql_suika_joint432_v3。已有合格资源v4 NPZ在加载时转换，不需要因为换Q头重采REP；若要补入旧NPZ未存的max_spirit/hitstop，可以用已有含对应列的CSV重生成NPZ，文件哈希变化后需指定新split_file。
 
-[单元测试源码](../tests/)覆盖全432动作往返、卡命令互斥、历史泄漏/边界、模型形状、Double DQN/CQL、归一化隔离。按要求本次未运行测试、编译前端或启动对局。新网页须由使用者手动构建。
+[单元测试源码](../tests/)覆盖全432动作往返、卡键重合清洗及互斥输出、历史泄漏/边界、模型形状、Double DQN/CQL、归一化隔离。清洗只改变重合行的切卡位，不改奖励/折扣或网络尺寸；现有Joint432模型仍按原兼容性检查加载。按要求本次未运行测试、编译前端或启动对局。新网页须由使用者手动构建。

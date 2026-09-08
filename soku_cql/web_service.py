@@ -217,7 +217,11 @@ def run_workbench(runtime):
         print("网页中开始/暂停训练；Ctrl+C 停止并保存。此入口不启动游戏。", flush=True)
         runtime.start()
         try:
-            server.run(sockets=[listener])
+            try:
+                server.run(sockets=[listener])
+            except KeyboardInterrupt:
+                # uvloop 在 Ctrl+C 时可能先抛 CancelledError，再转换为 KeyboardInterrupt；按正常停止处理。
+                print("收到 Ctrl+C，正在停止训练线程；已有训练状态将按运行阶段保存。", flush=True)
         finally:
             runtime.stop_event.set()
             runtime.thread.join()

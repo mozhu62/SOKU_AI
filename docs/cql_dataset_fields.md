@@ -108,7 +108,9 @@ Joint432 网络将资源 embedding 和数值直接放入 Current Encoder；无�
 5. `change_card`
 6. `use_spell_card`
 
-六列全零代表无按钮；前四战斗按钮允许任意组合，切卡和使用符卡必须互斥。转换和加载扫描整份数据，同帧两卡命令为1明确报 action schema 不兼容。
+六列全零代表无按钮；前四战斗按钮允许任意组合，编码后的切卡和使用符卡互斥。原始数据同帧两卡命令为1时，自动将切卡置0，保留使用符卡及其它按钮，不删帧。新转换NPZ保存清洗后的六列；已有NPZ加载时在内存中清洗，不修改文件及固定划分哈希。生成joint_action_id及previous_joint_action_id前采用同一规则，方向持续时间、奖励、状态和序列边界不变。
+
+新转换的metadata附带`card_overlap_policy=prefer_use_card_v1`和`card_overlap_cleaned_rows`，记录按状态过滤和action_shift对齐后的分片行数（包括无效转移末帧），不冒充原始CSV事件数。旧NPZ缺少此记录时，加载器直接扫描按钮并计数。加载日志、dataset_summary.json及数据页面展示转换已清洗/加载新清洗的数量，不把统计字段加入模型输入。除这一个明确允许的重合规则外，其它非法按钮值、缺失资源和schema不兼容仍拒绝加载。
 
 训练标签仅为 joint_action_id=(direction-1)*48+combat_mask*3+card_command，范围0～431。combat_mask固定bit0～3为A/D/B/C，card_command为NONE=0、CHANGE_CARD=1、USE_CARD=2。Neutral为ID192。统一编码/解码见[action_space.py](../soku_cql/action_space.py)。
 

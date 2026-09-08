@@ -77,6 +77,7 @@ python scripts/train.py --config configs/cql_suika.yaml --output outputs/cql_exp
   -> 主 CSV / objects.csv / done
   -> scripts/preprocess_replays.py
   -> data/replay_shards_resources_v4/*.npz
+  -> data/train_val_split_resources_v4.json
 ```
 
 ## 使用
@@ -87,13 +88,16 @@ python scripts/train.py --config configs/cql_suika.yaml --output outputs/cql_exp
 python scripts/preprocess_replays.py --config configs/replay_dataset.yaml
 ```
 
-这条命令会先处理 `collection.replay_dir` 中的 `.rep`，再转换采集结果。批处理器会跳过已经具有完整 CSV 三件套的 REP，因此中断后可以直接重新执行。
+这条命令会先处理 `collection.replay_dir` 中的 `.rep`，再转换采集结果；完整转换成功后，按当前训练配置生成或校验 `data/train_val_split_resources_v4.json`。批处理器会跳过已经具有完整 CSV 三件套的 REP，因此中断后可以直接重新执行。
 
 - `--overwrite-capture`：强制重新播放并采集已有 REP。
 - `--overwrite`：强制重新生成已有 CQL 分片。
 - `--skip-collection`：不启动游戏，只转换已经采集的 CSV。
+- `--only-split`：不采集、不转换，只为当前 NPZ 生成或校验固定 8:2 划分。
+- `--skip-split`：本次转换完成后不生成固定划分。
+- `--training-config 路径`：指定划分所使用的 CQL 训练配置，默认 `configs/cql_suika.yaml`。
 - `--workers 数量`：临时指定同时运行的游戏实例数。
-- `--limit 数量`：第二阶段只转换前若干份 CSV。
+- `--limit 数量`：第二阶段只转换前若干份 CSV；部分转换不会生成固定划分。
 
 游戏、REP、采集目录、加速倍数和并行实例数都在 `configs/replay_dataset.yaml` 的 `collection` 分组配置。所有相对路径以本项目目录为基准。
 
@@ -106,7 +110,9 @@ NPZ 保留以下原始控制字段；训练标签只有 joint_action_id：
 - `action_duration`：该水平与垂直组合已经连续保持的游戏帧数。
 - `action_buttons`：6个独立列，依次表示体术、DASH、轻弹幕、重弹幕、切卡、使用符卡。
 
-前四列按 A/D/B/C 的固定 bit 顺序构成 combat_mask（0～15），后两列构成互斥 card_command（NONE/CHANGE_CARD/USE_CARD）。同帧切卡与用卡都为1必须报 action schema 不兼容。Dataset 将原始轴转换为 direction 1～9，再计算 joint_action_id=(direction-1)*48+combat_mask*3+card_command，共432类。完整中立动作是ID192。
+前四列按 A/D/B/C 的固定 bit 顺序构成 combat_mask（0～15），后两列构成互斥 card_command（NONE/CHANGE_CARD/USE_CARD）。同帧切卡与用卡都为1时自动清洗：仅将切卡置0，保留用卡及其它按键，不删除这一帧。Dataset 将原始轴转换为 direction 1～9，再计算 joint_action_id=(direction-1)*48+combat_mask*3+card_command，共432类。完整中立动作是ID192。
+
+新 CSV→NPZ 转换直接保存清洗后的按钮；已有资源 v4 NPZ 在训练加载时自动清洗，不改写原文件，不需要重采 REP、重新转换 NPZ 或重建固定划分。启动日志、`dataset_summary.json` 和网页「数据与覆盖率」会显示清洗数量。上一帧动作历史也使用同一清洗规则；非法按钮值和其它 schema 错误仍会报错。规则标识为 `prefer_use_card_v1`，没有增加动作类别或修改奖励/折扣。
 
 `action_shift` 控制状态与按键标签的帧偏移，默认值1表示用下一采集帧中已执行的输入作为当前转移动作。observation[t] 只接收 action[t-1] 的 embedding 和 clip(action_duration[t-1],60)/60；片段起点使用 START token432。duration 仅指水平/垂直组合持续时间，不是完整动作时长。
 

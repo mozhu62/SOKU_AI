@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from .action_space import ACTION_SCHEMA, BUTTON_COLUMNS, compact_actions, validate_buttons
+from .action_space import ACTION_SCHEMA, CARD_OVERLAP_POLICY, BUTTON_COLUMNS, compact_actions, clean_card_overlap
 from .resources import RESOURCE_SUFFIXES, validate_player_resources
 from .replay_reader import ReplayPair, discover_replay_pairs, object_group_index
 from .schema import (
@@ -31,6 +31,7 @@ class ConversionResult:
     frames: int
     transitions: int
     output: str
+    card_overlap_cleaned_rows: int = 0
 
 
 def _save_npz(destination: Path, compression_level: int, **arrays: np.ndarray) -> None:
@@ -66,8 +67,10 @@ def _is_current_shard(path: Path) -> bool:
             buttons = source["action_buttons"]
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return False
-    # 已存在的 v4 也必须扫描卡牌命令冲突；语义错误不进入损坏文件的重新转换分支。
-    validate_buttons(buttons, str(path))
+    # 已有原始 NPZ 在训练加载时清洗，不为这个规则重写文件、改变固定划分哈希。
+    _, overlap = clean_card_overlap(buttons, str(path))
+    if np.any(overlap):
+        print(f"[clean] {path.name} 含 {int(np.count_nonzero(overlap))} 行卡键重合，加载时保留用卡、清除切卡")
     return True
 
 
@@ -253,10 +256,12 @@ def convert_replay(pair: ReplayPair, destination: Path, config: dict) -> Convers
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"Replay CSV 缺少资源字段：{sorted(missing)}；不能凭空补造，需有对应的新采集数据")
-    # 在有效战斗过滤前扫描双方全部行，避免把 schema 冲突隐藏在被过滤的帧中。
+    # 保留原始 CSV 的计数值；这里只记录重合位置，最终输出按钮时再清洗。
+    card_overlap_masks = {}
     for side in ("left", "right"):
-        validate_buttons(np.column_stack([frame[f"{side}_{key}"].to_numpy() > 0 for key in BUTTON_COLUMNS]),
-                         f"{pair.replay_id} {side} 原始 CSV")
+        _, card_overlap_masks[side] = clean_card_overlap(
+            np.column_stack([frame[f"{side}_{key}"].to_numpy() > 0 for key in BUTTON_COLUMNS]),
+            f"{pair.replay_id} {side} 原始 CSV")
     frame = pd.concat((pd.DataFrame({"source_row": np.arange(len(frame))}), frame), axis=1)
     self_side, opponent_side = _sides(frame, int(data["suika_character_id"]))
     valid = ((frame["initialized"] != 0) & (frame["in_battle"] != 0)
@@ -303,6 +308,9 @@ def convert_replay(pair: ReplayPair, destination: Path, config: dict) -> Convers
     action_horizontal, action_vertical, action_duration, action_buttons = compact_actions(
         frame, self_side, action_source, episode
     )
+    # 统计与 NPZ 标签同一套过滤/偏移后的行，避免把原始 CSV 行数当作训练标签数。
+    card_overlap_cleaned_rows = int(np.count_nonzero(
+        card_overlap_masks[self_side][frame["source_row"].to_numpy(np.int64)][action_source]))
     action_valid = transition_valid & (episode[action_source] == episode)
     self_hp = _values(frame, self_side, "hp", np.int32)
     opponent_hp = _values(frame, opponent_side, "hp", np.int32)
@@ -322,6 +330,8 @@ def convert_replay(pair: ReplayPair, destination: Path, config: dict) -> Convers
         "action_shift": action_shift,
         "continuous_normalized": False,
         "action_schema": ACTION_SCHEMA,
+        "card_overlap_policy": CARD_OVERLAP_POLICY,
+        "card_overlap_cleaned_rows": card_overlap_cleaned_rows,
         "action_semantics": "single_game_frame_controller_state; labels decoded as joint432",
         "action_duration_semantics": "consecutive_horizontal_vertical_combination_frames_not_joint_action_duration",
         "optional_state_continuous": list(OPTIONAL_STATE_FEATURES),
@@ -343,7 +353,8 @@ def convert_replay(pair: ReplayPair, destination: Path, config: dict) -> Convers
         transition_valid=(transition_valid & action_valid),
         rewards=reward.astype(np.float32), terminated=terminated,
     )
-    return ConversionResult(pair.replay_id, len(frame), int(transition_valid.sum()), str(destination))
+    return ConversionResult(pair.replay_id, len(frame), int(transition_valid.sum()), str(destination),
+                            card_overlap_cleaned_rows)
 
 
 def _convert_job(pair: ReplayPair, destination: Path, config: dict) -> ConversionResult:
@@ -383,7 +394,8 @@ def convert_dataset(
             result = convert_replay(pair, destination, config)
             results.append(result)
             print(f"[{index}/{len(pairs)}] {result.replay_id}: frames={result.frames} "
-                  f"transitions={result.transitions} action_schema={ACTION_SCHEMA}")
+                  f"transitions={result.transitions} card_overlap_cleaned={result.card_overlap_cleaned_rows} "
+                  f"action_schema={ACTION_SCHEMA}")
     else:
         print(f"Convert NPZ: workers={worker_count}, pending={len(pending)}")
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
@@ -399,7 +411,8 @@ def convert_dataset(
                     raise RuntimeError(f"转换 Replay 失败：{pair.replay_id}") from error
                 results.append(result)
                 print(f"[{index}/{len(pairs)}] {result.replay_id}: frames={result.frames} "
-                      f"transitions={result.transitions} action_schema={ACTION_SCHEMA}")
+                      f"transitions={result.transitions} card_overlap_cleaned={result.card_overlap_cleaned_rows} "
+                      f"action_schema={ACTION_SCHEMA}")
         results.sort(key=lambda item: item.replay_id)
     report = {"schema": CQL_REPLAY_SCHEMA,
               "converted": [result.__dict__ for result in results]}

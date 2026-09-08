@@ -23,7 +23,9 @@ Joint Q Head: Linear256→128 → SiLU → Linear128→432
 
 完整字段和默认878D Current输入展开见[模型架构](model_architecture.md)。原始v4资源NPZ可直接复用；新转换器额外保存原CSV实际存在的max_spirit/hitstop，旧NPZ缺失时用无效mask而非真实0。
 
-action=(direction 1～9, combat_mask 0～15, card_command 0～2)，joint ID=(direction−1)×48+combat_mask×3+card_command。bit顺序A/D/B/C；卡命令NONE/CHANGE_CARD/USE_CARD互斥。冲突帧明确报错。Neutral为ID192。
+action=(direction 1～9, combat_mask 0～15, card_command 0～2)，joint ID=(direction−1)×48+combat_mask×3+card_command。bit顺序A/D/B/C；卡命令NONE/CHANGE_CARD/USE_CARD互斥。原始输入同帧切卡与用卡重合时，自动清除切卡、保留用卡和其它按钮，不删除帧。Neutral为ID192。
+
+卡键清洗在标签编码和上一帧历史生成前完成，新 NPZ 写入清洗后的按钮，旧 NPZ 只在加载内存中清洗。已有文件和固定划分哈希不变，无需重采/重转。启动日志逐份记录清洗数量；`dataset_summary.json` 按训练/验证分组记录 `card_overlap_cleaned_rows`（转换时已清洗 + 本次加载清洗）、`card_overlap_cleaned_on_load`（本次加载清洗）、`card_overlap_cleaned_files`（涉及分片），页面「数据与覆盖率」同时展示。统计范围为分片全部标签行，包含末帧，不等同于有效训练转移数；重复缓存加载不累加计数。规则 `prefer_use_card_v1` 不改变432类动作编码、网络、gamma或奖励。
 
 当前observation仅加入previous_joint_action_id及上一帧方向组合持续时间clip60/60，不加入当前标签。START/PAD=432；Embedding(433,32)。技能slot使用variant8D、两个level各4D；Card ID双方所有槽共享16D并按槽concat。主干宽度不扩大，每侧对象仍最多3个。
 
@@ -62,7 +64,7 @@ loss = TD + cql_alpha * CQL
 
 ## 训练/验证划分
 
-首次启动按整份 REP 对应的资源版 NPZ 建立 `data/train_val_split_resources_v4.json`。默认 seed 42，约 80% REP 用于训练，剩余 20% 用于验证；按文件数而非帧数划分，整数取整。字节完全相同的重复 NPZ 归同组，重复组不会跨集合，重复组存在时最终文件比例可能略偏离 8:2。不同文件名但重新编码/重新压缩产生的重复录像不能仅靠文件哈希自动辨认。
+完整运行预处理入口后，会按整份 REP 对应的资源版 NPZ 建立或校验 `data/train_val_split_resources_v4.json`；只有已有 NPZ 时也可执行 `python scripts/preprocess_replays.py --only-split`。训练首次启动发现清单不存在时仍会自动建立。默认 seed 42，约 80% REP 用于训练，剩余 20% 用于验证；按文件数而非帧数划分，整数取整。字节完全相同的重复 NPZ 归同组，重复组不会跨集合，重复组存在时最终文件比例可能略偏离 8:2。不同文件名但重新编码/重新压缩产生的重复录像不能仅靠文件哈希自动辨认。
 
 划分清单持久化并校验内容哈希。新增、删除或改写 NPZ 后不自动重分：为新的数据版本指定新的 `data.split_file` 与模型输出目录。已有清单被篡改、两集合重叠或缺文件时启动失败，不静默跳过。
 
@@ -162,7 +164,7 @@ python scripts/train.py --config configs/cql_suika.yaml --output outputs/cql_new
 
 1. 用户构建前端并启动后，默认应打印本机地址与 SSH 转发指令；显式启用局域网监听时才打印局域网 IP 链接。8776 被占用时打印实际备用端口和匹配的转发指令，HTTP 与 WebSocket 均可通过同一个本地转发端口访问。
 2. 同一 seed、同一数据重启使用相同划分；训练与验证文件集合不相交；归一化来自训练集。
-3. 完整432种encode/decode逐一往返通过；前四按钮任意组合保留，切卡/用卡冲突明确拒绝；上一帧输入没有标签泄漏。
+3. 完整432种encode/decode逐一往返通过；前四按钮任意组合保留，切卡/用卡重合时仅清除切卡；不删帧、不改NPZ文件，重复加载计数不累加；上一帧输入没有标签泄漏。
 4. 终局、缺帧前后不拼接序列；burn-in 与 padding 不参与损失，终局 bootstrap 为零。
 5. 全部联合 Q 相等时，保守 gap 应为 T × log(432)；alpha=0 时总损失只含 TD。
 6. 验证前后在线网络、目标网络和优化器状态不变；验证仅使用隔离的 validation 名单。

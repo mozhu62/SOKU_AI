@@ -15,9 +15,13 @@ export function Dataset({state}:{state:Row}){
     <Card title="可选状态记录覆盖" note="旧 NPZ 未记录的字段显示 0 个真实样本，不会当成游戏数值零"><DataTable rows={['self_max_spirit','self_hitstop','opponent_max_spirit','opponent_hitstop'].map((name,i)=>({name,train:train.optional_state_counts?.[i],validation:val.optional_state_counts?.[i]}))} columns={[{key:'name',title:'字段'},{key:'train',title:'训练集有效记录数'},{key:'validation',title:'验证集有效记录数'}]}/></Card>
     <Card title="技能配置识别覆盖率" note="有效转移起点中成功识别技能的比例；缺失保留未知"><DataTable rows={['self','opponent'].flatMap(side=>[1,2,3,4].map((slot,i)=>({name:`${side==='self'?'己方':'对方'} skill_slot_${slot}`,train_rate:train.resource_coverage?.[side]&&train.transitions?train.resource_coverage[side][i]/train.transitions:null,val_rate:val.resource_coverage?.[side]&&val.transitions?val.resource_coverage[side][i]/val.transitions:null})))} columns={[{key:'name',title:'技能槽'},{key:'train_rate',title:'训练集',render:percent},{key:'val_rate',title:'验证集',render:percent}]}/></Card>
     <div className="two-columns"><Card title="完整训练集 Joint Action Top-N" note={`Neutral ${percent(train.neutral_fraction)}`}><JointFrequency catalog={state.action_catalog} counts={train.joint_counts} total={train.transitions}/></Card><Card title="验证集 Joint Action Top-N" note={`Neutral ${percent(val.neutral_fraction)}`}><JointFrequency catalog={state.action_catalog} counts={val.joint_counts} total={val.transitions}/></Card></div>
+    <Card title="卡键重合自动清洗" note="同帧切卡 + 用卡：仅清除切卡，保留用卡和其它按钮；不删帧、不改奖励。动作空间仍为 432 类。">
+      <DataTable rows={[{name:'训练集',...train},{name:'验证集',...val}]} columns={[{key:'name',title:'集合'},{key:'card_overlap_cleaned_files',title:'涉及分片',render:v=>v==null?'未记录':number(v,0)},{key:'card_overlap_cleaned_rows',title:'累计清洗行',render:v=>v==null?'未记录':number(v,0)},{key:'card_overlap_cleaned_on_load',title:'本次加载清洗行',render:v=>v==null?'未记录':number(v,0)}]}/>
+      <p className="muted">统计包含分片末帧等非训练标签行；累计值包含转换时已清洗的记录。已有 NPZ 仅在内存中处理，不改写文件或固定划分；动作频率和上一帧控制历史均使用清洗后的输入。</p>
+    </Card>
     <Card title="固定划分清单" note={state.data?.split_hash?`校验 ${state.data.split_hash.slice(0,16)}`:'未准备'}>{error&&<p className="error">{error}</p>}
       <div className="inline-controls"><Button variant="secondary" disabled={!offset} onClick={()=>setOffset(Math.max(0,offset-100))}>上一页</Button><span>{offset+1}–{Math.min(offset+100,files.total)} / {files.total}</span><Button variant="secondary" disabled={offset+100>=files.total} onClick={()=>setOffset(offset+100)}>下一页</Button></div>
-      <DataTable rows={files.rows} columns={[{key:'name',title:'NPZ'},{key:'split',title:'集合',render:v=>v==='train'?'训练':'验证'},{key:'frames',title:'状态帧'},{key:'transitions',title:'有效转移'}]}/>
+      <DataTable rows={files.rows} columns={[{key:'name',title:'NPZ'},{key:'split',title:'集合',render:v=>v==='train'?'训练':'验证'},{key:'frames',title:'状态帧'},{key:'transitions',title:'有效转移'},{key:'card_overlap_cleaned_rows',title:'清洗行',render:v=>v==null?'未记录':number(v,0)}]}/>
     </Card>
   </>;
 }

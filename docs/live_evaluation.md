@@ -84,7 +84,7 @@ python scripts/play.py --checkpoint outputs/cql_suika_joint432_v3/last.pt --head
 
 默认按键：上/下/左/右 = W/S/A/D；体术 = J；DASH = K；轻弹幕 = I；重弹幕 = L；切卡 = O；符卡 = P。O/P 是新增默认值，请先在游戏设置中核对。页面编辑后点击「应用并重新加载」才生效；长期保存请修改 YAML。
 
-唯一Joint Q头在432个完整Controller State上argmax，decode回屏幕绝对九宫格、四战斗按钮和互斥卡命令。不随人物朝向翻转；Neutral为ID192。连续相同输出保持按键，不自动连点，不替换为236B等宏指令。切卡与用卡同时回读为1会明确报动作schema不兼容并安全停止。
+唯一Joint Q头在432个完整Controller State上argmax，decode回屏幕绝对九宫格、四战斗按钮和互斥卡命令。不随人物朝向翻转；Neutral为ID192。连续相同输出保持按键，不自动连点，不替换为236B等宏指令。切卡与用卡同时回读为1时，按与离线数据相同的规则仅清除切卡、保留用卡及其它按钮，再生成历史输入；不因此中断。发键端仍严格检查输出卡命令互斥，不实际发送双卡命令。
 
 ## 4. 输入、记忆与实时限制
 

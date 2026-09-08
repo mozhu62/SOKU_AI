@@ -8,7 +8,7 @@ import numpy as np
 
 from soku_cql.dataset import read_shard, ReplayStore
 from soku_cql.resources import normalization_arrays
-from soku_cql.action_space import from_raw_axes
+from soku_cql.action_space import CARD_OVERLAP_POLICY, NEUTRAL_ACTION_ID, encode, from_raw_axes
 from soku_cql.config import DEFAULTS
 from soku_cql.schema import OPTIONAL_STATE_FEATURES
 from tests.fixtures import raw_shard, normalization
@@ -44,7 +44,10 @@ class DatasetJointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "replay.npz"
             np.savez(path, **values)
-            return read_shard(path, True)
+            original = path.read_bytes()
+            result = read_shard(path, True)
+            self.assertEqual(path.read_bytes(), original)
+            return result
 
     def test_existing_v4_raw_fields_convert_in_memory(self):
         raw = raw_shard()
@@ -64,11 +67,72 @@ class DatasetJointTests(unittest.TestCase):
         self.assertEqual(obs["self_object_numerical"].shape, (1, 3, 3, 8))
         self.assertEqual(obs["self_hand_card_ids"].shape, (1, 3, 16))
 
-    def test_conflict_at_unused_last_frame_is_not_hidden(self):
+    def test_overlap_at_unused_last_frame_is_cleaned_and_counted(self):
         raw = raw_shard()
         raw["action_buttons"][-1, 4:] = 1
-        with self.assertRaisesRegex(ValueError, "action schema 不兼容"):
-            self.read(raw)
+        shard = self.read(raw)
+        self.assertEqual(int(shard["card_overlap_cleaned_rows"]), 1)
+        self.assertEqual(int(shard["card_overlap_cleaned_on_load"]), 1)
+        self.assertEqual(shard["joint_action_id"][-1], encode(5, 0, 2))
+        self.assertEqual(shard["segment_cumulative"][-1], 5)
+
+    def test_cleaned_action_reaches_only_next_observation_without_dropping_frames(self):
+        raw = raw_shard()
+        baseline = self.read(raw)
+        raw["action_horizontal"][2] = 1
+        raw["action_buttons"][2] = [1, 1, 0, 0, 1, 1]
+        shard = self.read(raw)
+        self.assertEqual(len(shard["joint_action_id"]), 6)
+        self.assertEqual(shard["joint_action_id"][2], encode(6, 3, 2))
+        self.assertEqual(shard["previous_joint_action_id"][2], NEUTRAL_ACTION_ID)
+        self.assertEqual(shard["previous_joint_action_id"][3], encode(6, 3, 2))
+        for key in ("segments", "segment_cumulative", "rewards", "terminated", "previous_action_duration"):
+            np.testing.assert_array_equal(shard[key], baseline[key])
+        self.assertEqual(int(shard["card_overlap_cleaned_rows"]), 1)
+
+    def test_conversion_cleaning_is_not_counted_again_during_loading(self):
+        raw = raw_shard()
+        raw["action_buttons"][2, 5] = 1
+        meta = json.loads(str(raw["metadata_json"].item()))
+        meta.update(card_overlap_policy=CARD_OVERLAP_POLICY, card_overlap_cleaned_rows=1)
+        raw["metadata_json"] = np.asarray(json.dumps(meta))
+        shard = self.read(raw)
+        self.assertEqual(int(shard["card_overlap_cleaned_rows"]), 1)
+        self.assertEqual(int(shard["card_overlap_cleaned_on_load"]), 0)
+        self.assertEqual(shard["joint_action_id"][2], encode(5, 0, 2))
+
+    def test_existing_npz_is_not_reconverted_for_card_overlap(self):
+        from soku_cql.replay_preprocess import _is_current_shard
+
+        raw = raw_shard()
+        raw["action_buttons"][2, 4:] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "replay.npz"
+            np.savez(path, **raw)
+            original = path.read_bytes()
+            self.assertTrue(_is_current_shard(path))
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_cleaning_summary_is_split_specific_and_not_recounted_by_cache_reload(self):
+        train, val = raw_shard(), raw_shard()
+        train["action_buttons"][2, 4:] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            np.savez(Path(directory) / "train.npz", **train)
+            np.savez(Path(directory) / "val.npz", **val)
+            cfg = copy.deepcopy(DEFAULTS)
+            cfg["data"].update(directory=directory, cache_gb=0)
+            split = {"train": ["train.npz"], "validation": ["val.npz"],
+                     "files": ["train.npz", "val.npz"], "sha256": "test"}
+            store = ReplayStore(cfg, split, lambda message: None)
+            store.get("train.npz")
+            store.get("train.npz")
+            summary = store.summary()
+            self.assertEqual(summary["card_overlap_policy"], CARD_OVERLAP_POLICY)
+            self.assertEqual(summary["train"]["card_overlap_cleaned_rows"], 1)
+            self.assertEqual(summary["train"]["card_overlap_cleaned_on_load"], 1)
+            self.assertEqual(summary["train"]["card_overlap_cleaned_files"], 1)
+            self.assertEqual(summary["validation"]["card_overlap_cleaned_rows"], 0)
+            self.assertEqual(summary["train"]["joint_counts"][encode(5, 0, 2)], 1)
 
     def test_segments_reset_and_only_joint_training_labels(self):
         raw = raw_shard()

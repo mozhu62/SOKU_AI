@@ -12,6 +12,7 @@ PREVIOUS_ACTION_VOCAB = 433
 NEUTRAL_ACTION_ID = 192
 COMBAT_BUTTONS = ("melee", "dash", "light_projectile", "heavy_projectile")
 CARD_COMMANDS = ("NONE", "CHANGE_CARD", "USE_CARD")
+CARD_OVERLAP_POLICY = "prefer_use_card_v1"
 
 
 def _integer(value, name, low, high):
@@ -37,20 +38,38 @@ def decode(joint_action_id):
     return tuple(int(x) for x in result) if value.ndim == 0 else result
 
 
-def validate_buttons(buttons, context=""):
+def _binary_buttons(buttons, context):
     values = np.asarray(buttons)
     if values.ndim < 1 or values.shape[-1] != 6 or not np.isin(values, [0, 1]).all():
         raise ValueError(f"action schema 不兼容：{context} 按钮必须是六列 0/1")
+    return values
+
+
+def clean_card_overlap(buttons, context=""):
+    """按约定保留用卡、清除重合切卡；返回清洗结果和逐行标记，不改写调用者的原始数组。"""
+    values = _binary_buttons(buttons, context)
+    overlap = (values[..., 4] == 1) & (values[..., 5] == 1)
+    if np.any(overlap):
+        values = values.copy()
+        values[..., 4] = np.where(overlap, 0, values[..., 4])
+    return values, overlap
+
+
+def validate_buttons(buttons, context=""):
+    """发键前严格检查输出；数据导入与实际输入回读使用 clean_card_overlap。"""
+    values = _binary_buttons(buttons, context)
     conflict = (values[..., 4] == 1) & (values[..., 5] == 1)
     if np.any(conflict):
         positions = np.argwhere(conflict).tolist()[:8]
         raise ValueError(f"action schema 不兼容：{context} 同帧 CHANGE_CARD 与 USE_CARD 同时为 1，"
-                         f"位置={positions}；三类 card_command 无法表示，禁止映射或丢弃")
+                         f"位置={positions}；发键输出必须是清洗后的互斥卡命令")
     return values.astype(np.int64, copy=False)
 
 
 def from_controller(direction, buttons, context=""):
-    values = validate_buttons(buttons, context)
+    # 离线标签与实战回读共用清洗规则，上一帧动作也由清洗后的完整输入生成。
+    values, _ = clean_card_overlap(buttons, context)
+    values = values.astype(np.int64, copy=False)
     # 固定 bit 顺序 A、D、B、C；切卡和用卡不是战斗 bit，而是互斥三分类。
     combat = (values[..., :4] * np.asarray([1, 2, 4, 8])).sum(-1)
     return encode(direction, combat, values[..., 4] + 2 * values[..., 5])
@@ -150,7 +169,7 @@ def compact_actions(
         frame[f"{side}_{column}"].to_numpy(np.int16) > 0
         for column in BUTTON_COLUMNS
     ]).astype(np.uint8)
-    validate_buttons(buttons, f"{side} 原始输入帧")
+    buttons, _ = clean_card_overlap(buttons, f"{side} 原始输入帧")
 
     return (
         horizontal[source_index],

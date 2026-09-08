@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -10,9 +11,15 @@ import numpy as np
 
 from .config import resolve
 from .schema import manifest, CARD_NUMERICAL_INDICES, OPTIONAL_STATE_FEATURES
-from .action_space import ACTION_SCHEMA, ACTION_COUNT, NEUTRAL_ACTION_ID, from_raw_axes, previous_actions
+from .action_space import (
+    ACTION_SCHEMA, ACTION_COUNT, NEUTRAL_ACTION_ID, CARD_OVERLAP_POLICY,
+    clean_card_overlap, from_raw_axes, previous_actions,
+)
 from .resources import RESOURCE_SUFFIXES, resource_observation, validate_player_resources, normalization_arrays
 from .storage import atomic_json
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def digest(value):
@@ -150,7 +157,19 @@ def read_shard(path: Path, positive_down: bool):
                     or not np.issubdtype(categorical.dtype, np.integer)
                     or not np.isfinite(numeric).all() or not np.isfinite(categorical).all()):
                 raise ValueError(f"{side} 对象、offsets 或最近三对象约束错误")
-        # 在过滤转移前扫描整份原始标签，冲突不能因为落在无效/终局帧而被静默丢弃。
+        # 清洗先于标签编码和历史右移，不删帧、不改奖励，也不回写 NPZ 破坏固定划分哈希。
+        shard["action_buttons"], overlap = clean_card_overlap(shard["action_buttons"], path.name)
+        cleaned_on_load = int(np.count_nonzero(overlap))
+        cleaned_on_conversion = meta.get("card_overlap_cleaned_rows", 0)
+        if (type(cleaned_on_conversion) is not int or not 0 <= cleaned_on_conversion <= count
+                or cleaned_on_conversion + cleaned_on_load > count):
+            raise ValueError("卡键清洗记录必须是分片行数范围内的整数")
+        if ("card_overlap_policy" in meta and meta["card_overlap_policy"] != CARD_OVERLAP_POLICY
+                or cleaned_on_conversion and meta.get("card_overlap_policy") != CARD_OVERLAP_POLICY):
+            raise ValueError("卡键清洗规则不兼容：当前只支持重合时保留用卡、清除切卡")
+        # 缓存只存 ndarray；诊断计数不进入 observation 或训练标签。
+        shard["card_overlap_cleaned_on_load"] = np.asarray(cleaned_on_load, np.int64)
+        shard["card_overlap_cleaned_rows"] = np.asarray(cleaned_on_conversion + cleaned_on_load, np.int64)
         joint = from_raw_axes(shard["action_horizontal"], shard["action_vertical"],
                               shard["action_buttons"], positive_down, path.name)
         if "joint_action_id" in shard and not np.array_equal(shard["joint_action_id"], joint):
@@ -204,6 +223,13 @@ class ReplayStore:
             self.info[name] = {"name": name, "split": "train" if name in train_names else "validation",
                                "frames": len(valid), "transitions": int(valid.sum()),
                                "joint_counts": np.bincount(shard["joint_action_id"][valid], minlength=ACTION_COUNT).tolist()}
+            for key in ("card_overlap_cleaned_rows", "card_overlap_cleaned_on_load"):
+                self.info[name][key] = int(shard[key])
+            cleaned = self.info[name]["card_overlap_cleaned_rows"]
+            if cleaned:
+                LOGGER.info("卡键清洗 %s：%d 行（转换时 %d，加载时 %d）；保留用卡、清除切卡，不删帧",
+                            name, cleaned, cleaned - int(shard["card_overlap_cleaned_on_load"]),
+                            int(shard["card_overlap_cleaned_on_load"]))
             self.info[name]["optional_state_counts"] = shard["state_optional_mask"][valid].sum(0).astype(int).tolist()
             self.info[name]["resource_coverage"] = {
                 side: (((shard[f"{side}_skill_valid_mask"][valid, None].astype(np.int64)
@@ -234,6 +260,10 @@ class ReplayStore:
             raise ValueError("checkpoint 与数据动作/输入历史 schema 不兼容")
         self.norm = normalization_arrays(self.normalization)
         self.optional_enabled = np.asarray(self.normalization["optional_state"]["counts"]) > 0
+        LOGGER.info("卡键清洗汇总：%d 份分片、%d 行；规则=%s，动作空间仍为 %d 类",
+                    sum(row["card_overlap_cleaned_rows"] > 0 for row in self.info.values()),
+                    sum(row["card_overlap_cleaned_rows"] for row in self.info.values()),
+                    CARD_OVERLAP_POLICY, ACTION_COUNT)
 
     def get(self, name):
         with self.lock:
@@ -265,11 +295,15 @@ class ReplayStore:
                              "joint_counts": np.sum([x["joint_counts"] for x in rows], 0).tolist(),
                              "optional_state_counts": np.sum([x["optional_state_counts"] for x in rows], 0).tolist()}
             result[split]["neutral_fraction"] = result[split]["joint_counts"][NEUTRAL_ACTION_ID] / result[split]["transitions"]
+            result[split]["card_overlap_cleaned_rows"] = sum(x["card_overlap_cleaned_rows"] for x in rows)
+            result[split]["card_overlap_cleaned_on_load"] = sum(x["card_overlap_cleaned_on_load"] for x in rows)
+            result[split]["card_overlap_cleaned_files"] = sum(x["card_overlap_cleaned_rows"] > 0 for x in rows)
             result[split]["resource_coverage"] = {
                 side: np.sum([x["resource_coverage"][side] for x in rows], 0).tolist()
                 for side in ("self", "opponent")
             }
         result["split_hash"] = self.split["sha256"]
+        result["card_overlap_policy"] = CARD_OVERLAP_POLICY
         return result
 
     def sample(self, rng, cfg, split="train"):
