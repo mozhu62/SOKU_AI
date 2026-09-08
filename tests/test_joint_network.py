@@ -87,7 +87,9 @@ class JointNetworkTests(unittest.TestCase):
         parts = {"q": values, "target": values, "gap": torch.ones(3), "td_loss": torch.tensor(0.0),
                  "joint_q": joint, "joint_labels": labels, "n_step_steps": torch.tensor([5, 3, 1]),
                  "n_step_full": torch.tensor([True, False, False]),
-                 "bootstrap_active": torch.tensor([True, True, False])}
+                 "bootstrap_active": torch.tensor([True, True, False]),
+                 "expert_imitation_loss": torch.tensor(2.0),
+                 "expert_imitation_contribution": torch.tensor(0.02)}
         result = Learner.metrics(parts)
         self.assertEqual(result["td_mse"], 0)
         self.assertEqual(result["td_mae"], 0)
@@ -98,6 +100,8 @@ class JointNetworkTests(unittest.TestCase):
         self.assertEqual(result["n_step_mean"], 3)
         self.assertAlmostEqual(result["n_step_full_fraction"], 1/3)
         self.assertAlmostEqual(result["bootstrap_fraction"], 2/3)
+        self.assertEqual(result["expert_imitation_loss"], 2)
+        self.assertAlmostEqual(result["expert_imitation_contribution"], 0.02)
         self.assertIn("action", result["joint_data_top"][0])
         parts["target"] = torch.ones(3)
         self.assertIsNone(Learner.metrics(parts)["ev"])

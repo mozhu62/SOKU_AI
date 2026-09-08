@@ -182,6 +182,7 @@ class NStepLearnerTests(unittest.TestCase):
     def test_checkpoint_preserves_old_single_step_semantics_without_touching_file(self):
         cfg = copy.deepcopy(DEFAULTS)
         cfg["training"].pop("n_step")
+        cfg["training"].pop("expert_imitation_weight")
         spec = {"network_version": NETWORK_VERSION, "action_schema": ACTION_SCHEMA,
                 "inputs": policy_input_manifest()}
         package = {"network_version": NETWORK_VERSION, "spec": spec, "config": cfg,
@@ -192,6 +193,7 @@ class NStepLearnerTests(unittest.TestCase):
             original = path.read_bytes()
             restored = load(path)
             self.assertEqual(restored["config"]["training"]["n_step"], 1)
+            self.assertEqual(restored["config"]["training"]["expert_imitation_weight"], 0)
             torch.testing.assert_close(restored["online"]["weight"], package["online"]["weight"])
             self.assertEqual(path.read_bytes(), original)
             restored["config"]["training"]["n_step"] = 5

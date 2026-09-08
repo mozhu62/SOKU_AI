@@ -99,10 +99,13 @@ a_next = argmax(Q_online(s[t+k]), 432个动作)
 y = R_k + gamma^k × (1 - terminated_within_k) × Q_target(s[t+k], a_next)
 TD = mean(Huber(q_data, stop_gradient(y)))
 CQL = mean(T × logsumexp(Q_online(s)/T, 432个动作) - q_data)
-loss = TD + cql_alpha × CQL
+imitation = CQL / T
+loss = TD + cql_alpha × CQL + expert_imitation_weight × imitation
 ```
 
 目标网络是一套完整网络，初始复制online、禁用梯度；有效优化后继续target_tau软更新。TD/CQL共用有效mask。不再有分项Q、六按钮loss或可加Q分解。T只用于CQL保守项，推理直接argmax。
+
+微量高手动作模仿复用 `CQL/T`，它等于完整 REP 动作标签的 `CE(Q/T, action)`；默认权重 0.01，0 可关闭。不增加新网络、专家间隔或“猜对动作”的额外环境奖励。当前 T=1、cql_alpha=1 时，相当于现有约束增加 1%，不是单独一套策略算法。训练输出始终为原始 Q，交叉熵只用于辅助优化；有效 mask、当前标签隔离与验证无梯度保持不变。详见[微量模仿说明](offline_training.md#微量高手动作模仿)。
 
 TD 已改为可配置 N 步，默认 N=5，设为 1 等价于原单步。真终局不 bootstrap；非终局断点缩短到实际 k 后从已观测的末状态 bootstrap。输入序列为 `burn_in + sequence_length + n_step` 个状态，在线和目标 GRU 分别保留完整因果历史；仅前 `sequence_length` 个主序列位置参与损失，其余是前瞻状态。上一帧控制历史与当前标签的隔离不变。
 

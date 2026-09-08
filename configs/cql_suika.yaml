@@ -33,6 +33,9 @@ training:
   n_step: 5
   cql_alpha: 1.0
   cql_temperature: 1.0
+  # 微量模仿 REP 的完整按键标签；辅助损失，不给每帧添加固定奖励。0 关闭。
+  # 复用 CQL gap/T（交叉熵）；当前 T=1、alpha=1 时，相当于增强该约束 1%。
+  expert_imitation_weight: 0.1
   target_tau: 0.005
   max_grad_norm: 10.0
   weight_decay: 0.0001

@@ -108,7 +108,10 @@ class Runtime:
             self.state["last_request"] = copy.deepcopy(row)
 
     def _record(self, kind, values):
-        row = {**values, **target_spec(self.config["training"]), "action_schema": ACTION_SCHEMA,
+        cfg = self.config["training"]
+        row = {**values, **target_spec(cfg), "expert_imitation_weight": cfg["expert_imitation_weight"],
+               "effective_cql_alpha": cfg["cql_alpha"] + cfg["expert_imitation_weight"] / cfg["cql_temperature"],
+               "action_schema": ACTION_SCHEMA,
                "kind": kind, "step": self.step, "stage": self.stage, "time": time.time()}
         with (self.output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
@@ -239,6 +242,8 @@ class Runtime:
         result.update(samples=count, ev=1 - error_variance / variance if variance > 1e-8 else None,
                       batches=len(rows), seconds=time.perf_counter() - started,
                       selection_metric="validation_td_mse_v1", step=self.step, stage=self.stage,
+                      expert_imitation_weight=cfg["expert_imitation_weight"],
+                      effective_cql_alpha=cfg["cql_alpha"] + cfg["expert_imitation_weight"] / cfg["cql_temperature"],
                       **target_spec(cfg))
         self.timings["validation"] += result["seconds"]
         self._record("validation", result)
@@ -275,6 +280,10 @@ class Runtime:
             self.learner = Learner(self.config)
             LOGGER.info("TD 目标：N=%d，gamma=%s；终局停止 bootstrap，非终局片段末端缩短回报后 bootstrap",
                         self.config["training"]["n_step"], self.config["training"]["gamma"])
+            cfg = self.config["training"]
+            LOGGER.info("高手动作模仿：weight=%s（0 关闭），等效 CQL alpha=%s；不改 NPZ 奖励或 TD 目标",
+                        cfg["expert_imitation_weight"],
+                        cfg["cql_alpha"] + cfg["expert_imitation_weight"] / cfg["cql_temperature"])
             if package:
                 for key in ("model", "seed"):
                     if package["config"][key] != self.config[key]:
@@ -352,14 +361,17 @@ class Runtime:
                     result.update(data_wait_seconds=wait, steps_per_second=1 / max(active, 1e-9),
                                   samples_per_second=result["samples"] / max(active, 1e-9),
                                   learning_rate=cfg["learning_rate"], cql_alpha=cfg["cql_alpha"],
+                                  expert_imitation_weight=cfg["expert_imitation_weight"],
+                                  effective_cql_alpha=cfg["cql_alpha"] + cfg["expert_imitation_weight"] / cfg["cql_temperature"],
                                   cache_gb=self.store.bytes / 1024 ** 3,
                                   cache_hit_rate=self.store.hits / max(1, self.store.hits + self.store.misses),
                                   step=self.step, stage=self.stage, **target_spec(cfg))
                     self._record("train", result)
                     self.publish(latest_train=result, timings=self.timings)
-                    LOGGER.info("step=%d/%d N=%d effective_N=%.2f loss=%.5f TD=%.5f CQL=%.5f speed=%.2f step/s",
+                    LOGGER.info("step=%d/%d N=%d effective_N=%.2f loss=%.5f TD=%.5f CQL=%.5f imitation=%.6f speed=%.2f step/s",
                                 self.step, cfg["total_steps"], cfg["n_step"], result["n_step_mean"],
-                                result["loss"], result["td_mse"], result["cql_gap"], result["steps_per_second"])
+                                result["loss"], result["td_mse"], result["cql_gap"],
+                                result["expert_imitation_contribution"], result["steps_per_second"])
                 self.publish(step=self.step, updates=self.updates, samples=self.samples)
                 if self.step % cfg["validation_interval"] == 0:
                     self._validate()

@@ -93,8 +93,14 @@ class Learner:
         q, y = data_q[mask], target[mask]
         gap = conservative_gap(current_q, data_q, cfg["cql_temperature"])[mask]
         td_loss = F.smooth_l1_loss(q, y)
-        loss = td_loss + cfg["cql_alpha"] * gap.mean()
+        # gap/T 等于以 REP 完整动作作标签的 CE(Q/T)，复用已有计算，不增加 Actor 或专家间隔。
+        # 标签仅用于损失，不进入当前 observation；模仿项与 TD/CQL 使用同一有效 mask。
+        imitation_loss = gap.mean() / cfg["cql_temperature"]
+        imitation_contribution = cfg["expert_imitation_weight"] * imitation_loss
+        loss = td_loss + cfg["cql_alpha"] * gap.mean() + imitation_contribution
         return loss, {"q": q, "target": y, "gap": gap, "td_loss": td_loss,
+                      "expert_imitation_loss": imitation_loss,
+                      "expert_imitation_contribution": imitation_contribution,
                       "joint_q": current_q[mask], "joint_labels": batch["joint_action_id"][mask],
                       "n_step_steps": batch["n_step_steps"][mask],
                       "n_step_full": (batch["n_step_steps"][mask] == cfg["n_step"]),
@@ -115,11 +121,14 @@ class Learner:
                                (q_max - q).mean(), (labels == NEUTRAL_ACTION_ID).float().mean(),
                                (prediction == NEUTRAL_ACTION_ID).float().mean(),
                                parts["n_step_steps"].float().mean(), parts["n_step_full"].float().mean(),
-                               parts["bootstrap_active"].float().mean())).cpu().tolist()
+                               parts["bootstrap_active"].float().mean(),
+                               parts["expert_imitation_loss"].detach(),
+                               parts["expert_imitation_contribution"].detach())).cpu().tolist()
         keys = ("td_loss", "cql_gap", "td_mse", "td_mae", "q_data_mean", "q_data_std", "q_abs_max", "target_mean",
                 "target_std", "target_variance", "error_variance", "joint_accuracy", "q_max_mean", "q_max_std",
                 "q_max_minus_q_data", "neutral_data_fraction", "neutral_pred_fraction",
-                "n_step_mean", "n_step_full_fraction", "bootstrap_fraction")
+                "n_step_mean", "n_step_full_fraction", "bootstrap_fraction",
+                "expert_imitation_loss", "expert_imitation_contribution")
         result = dict(zip(keys, scalars))
         result["ev"] = 1 - result["error_variance"] / result["target_variance"] if result["target_variance"] > 1e-8 else None
         result["samples"] = len(q)

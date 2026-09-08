@@ -45,10 +45,27 @@ y  = R + gamma^k * (1 - terminated_within_k) * Q_target(s[t+k],a*)
 TD = mean(Huber(Q_online(s,a_dataset), stop_gradient(y)))
 
 CQL = mean(T * logsumexp_a(Q_online(s,a)/T) - Q_online(s,a_dataset))
-loss = TD + cql_alpha * CQL
+imitation = CQL / T
+loss = TD + cql_alpha * CQL + expert_imitation_weight * imitation
 ```
 
 保守项直接对同次前向输出的全部432个完整动作计算logsumexp，不做可加分解。cql_temperature只用于保守项，不是策略温度；网络末层没有softmax，推理直接argmax。
+
+### 微量高手动作模仿
+
+`training.expert_imitation_weight` 默认 **0.01**，范围 0～1，设为 **0** 关闭额外模仿项。此处“策略奖励”实现为训练辅助损失，不改游戏扣血奖励，不给每个专家样本固定加分，也不把模型是否猜对当前标签写进 TD 目标。
+
+每个有效状态使用 REP 同一时刻的完整 `joint_action_id` 作为高手标签，涵盖方向、A/D/B/C 组合及卡命令。梯度鼓励该标签相对其它完整动作获得更高评分；当前标签只进损失，observation 仍只读取上一帧实际动作。中性动作没有额外保护、屏蔽或加权；若高手频繁使用中性动作，模仿项同样会学习这种分布，不保证必然增加攻击。
+
+数学上 `CQL / T = logsumexp(Q/T) - Q_expert/T = CE(Q/T, expert_action)`。因此直接复用已经计算的 CQL gap，不再重复计算 softmax、增加 Actor 或引入 DQfD expert margin。这个关系由当前离散 [CQL 公式](https://arxiv.org/html/2006.04779v2)直接整理而来，是同一约束的可单独记录、关闭的微量增强，不是独立于 CQL 的新算法。
+
+等效保守系数为 `effective_cql_alpha = cql_alpha + expert_imitation_weight / T`。当前 alpha=1、T=1、weight=0.01 时为 **1.01**，相对原约束增加约 **1%**，不是“每帧奖励 0.01”，也不保证训练效果立刻明显提升。如果降低 T，同样的模仿权重会产生更大增强。需要仅做 TD 对照时，必须把 `cql_alpha` 和 `expert_imitation_weight` 都设为 0。
+
+模仿项与 TD/CQL 使用同一有效 mask，padding、burn-in 和尾部前瞻不作为额外模仿样本。验证只计算这些指标，不反向传播；最佳模型仍按分阶段的验证 TD MSE 比较，不按专家一致率或模仿损失选最优。
+
+新增记录 `expert_imitation_loss`（原始交叉熵）、`expert_imitation_contribution`（乘权重后的损失贡献）、`expert_imitation_weight` 与 `effective_cql_alpha`。原有 `joint_accuracy` 是完整动作与 REP 标签的一致率，不是胜率；一致率增加也不证明战斗能力提高。旧日志没有这些值时显示“未记录”。
+
+新 YAML 启用微量模仿；旧 checkpoint 缺字段时补为 0，单独 `--resume` 不暗中开启。使用 `--config configs/cql_suika.yaml --resume 你的模型路径.pt` 或在工作台暂停后应用该参数，可以沿用权重和优化器启用它；变更会标记新的参数阶段。NPZ、归一化、网络形状与实战推理接口均不变，不需要重新生成数据。新增图表项由使用者手动构建前端后显示，参数表本身动态读取后端配置项。
 
 在线网络负责第 k 步状态的动作选择，目标网络负责该动作评分，目标值停止梯度。每次有效优化后按 `target_tau` 软更新目标网络。AMP 梯度溢出时跳过优化器和目标网络更新，并记录 `optimizer_skipped`。这次以 N 步 TD 替换单步 TD，并非同时叠加两份 TD 损失；没有增加 PER 或专家间隔项。
 
@@ -78,7 +95,7 @@ python scripts/train.py --config configs/cql_suika.yaml --resume outputs/cql_sui
 | n_step_full_fraction | 实际 k 等于配置 N 的样本占比；在第 N 步终局也计为完整 N 步 |
 | bootstrap_fraction | 最终 bootstrap 折扣大于零的样本占比；gamma=0 时为零 |
 
-旧日志不回填这些指标。验证 TD MSE、MAE、EV 现在针对同一套 N 步目标计算，损失仍是 Huber + CQL。
+旧日志不回填这些指标。验证 TD MSE、MAE、EV 现在针对同一套 N 步目标计算；总损失是 Huber + CQL + 可关闭的微量模仿贡献，模仿项不改变 TD 目标。
 
 ## 样本、序列与有效性
 
@@ -126,8 +143,9 @@ python scripts/train.py --config configs/cql_suika.yaml --resume outputs/cql_sui
 | learning_rate | 0.0001 | AdamW 学习率 |
 | gamma | 0.99 | 每帧 Bellman 折扣 |
 | n_step | 5 | 累计奖励的最大连续转移数；1 恢复单步，范围 1～120 |
-| cql_alpha | 1 | 保守正则强度；0 退化为这里的 Double DQN TD 目标 |
+| cql_alpha | 1 | 保守正则强度；与 expert_imitation_weight 同时为 0 时只剩 TD |
 | cql_temperature | 1 | CQL logsumexp 温度 |
+| expert_imitation_weight | 0.01 | 微量高手模仿系数，乘以 CQL/T；0 关闭额外模仿 |
 | target_tau | 0.005 | 目标参数向在线参数靠近的比例 |
 | max_grad_norm | 10 | 梯度范数裁剪 |
 | log_interval | 20 | 指标与模块梯度/变化量记录间隔 |
@@ -195,7 +213,7 @@ python scripts/train.py --config configs/cql_suika.yaml --output outputs/cql_new
 2. 同一 seed、同一数据重启使用相同划分；训练与验证文件集合不相交；归一化来自训练集。
 3. 完整432种encode/decode逐一往返通过；前四按钮任意组合保留，切卡/用卡重合时仅清除切卡；不删帧、不改NPZ文件，重复加载计数不累加；上一帧输入没有标签泄漏。
 4. 终局、缺帧前后不拼接序列；burn-in 与 padding 不参与损失，终局 bootstrap 为零。
-5. 全部联合 Q 相等时，保守 gap 应为 T × log(432)；alpha=0 时总损失只含 TD。
+5. 全部联合 Q 相等时，保守 gap 应为 T × log(432)，模仿原始损失应为 log(432)；alpha 和 expert_imitation_weight 同时为 0 时总损失只含 TD。
 6. 验证前后在线网络、目标网络和优化器状态不变；验证仅使用隔离的 validation 名单。
 7. 冻结模块记录的参数变化为 0，未冻结模块可变化；解冻不重建优化器。
 8. 保存/续训恢复 online、target、optimizer/scaler 与相同采样步计划；不读取 PPO 权重。

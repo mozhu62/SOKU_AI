@@ -56,6 +56,12 @@ python scripts/train.py --config configs/cql_suika.yaml --headless
 python scripts/train.py --resume outputs/cql_suika_joint432_v3/last.pt
 ```
 
+### 微量高手动作模仿
+
+当前 YAML 的 `training.expert_imitation_weight: 0.01` 轻微增强对 REP 完整按键决策的模仿，设为 0 可关闭。它复用 CQL 已有动作约束：默认 T=1、alpha=1 时仅增强约 1%，不增加网络或专家间隔，不给每帧固定奖励，也不修改 NPZ 的扣血奖惩与 N 步目标。工作台暂停后可以调整；训练日志与图表分别记录原始模仿损失和实际加权贡献。
+
+旧模型只写 `--resume` 时继续沿用原配置（缺失此项按 0 处理）；启用新默认值需同时加 `--config configs/cql_suika.yaml`。现有模型和数据可直接复用。前端新指标需由使用者执行 `npm --prefix web run build`；本次没有自动构建或启动训练。详见[微量模仿说明](docs/offline_training.md#微量高手动作模仿)。
+
 ### N 步 TD
 
 当前 TD 默认累计 **5 步**折扣奖励，配置项为 `training.n_step`（1～120）；设为 1 恢复单步。终局停止估值，断帧/片段边界自动缩短，不跨局。网络、432 个动作、即时奖励和 gamma 均不变，不需要重新生成 NPZ。

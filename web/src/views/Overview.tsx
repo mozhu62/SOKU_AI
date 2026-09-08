@@ -20,7 +20,7 @@ export function Overview({state}:{state:Row}){
     <progress className="run-progress" aria-label="训练完成比例" max={total||1} value={state.step||0}/>
     {(train.error||validation.error)&&<p className="error">{train.error||validation.error}</p>}
     <div className="two-columns">
-      <Trend title="训练目标的组成" rows={train.rows} series={[{key:'loss',name:'总损失',color:'#70a7ff'},{key:'td_loss',name:'TD Huber',color:'#42d6b0'},{key:'cql_gap',name:'CQL 原始差值',color:'#edbf6e'}]} note="总损失 = TD + α × CQL"/>
+      <Trend title="训练目标的组成" rows={train.rows} series={[{key:'loss',name:'总损失',color:'#70a7ff'},{key:'td_loss',name:'TD Huber',color:'#42d6b0'},{key:'cql_gap',name:'CQL 原始差值',color:'#edbf6e'},{key:'expert_imitation_contribution',name:'微量模仿贡献',color:'#c296ef'}]} note="总损失 = TD + α × CQL + 微量模仿贡献（β × CQL / T）；不是额外扣血奖励"/>
       <Trend title="训练与验证的 TD 误差" rows={[...train.rows.map(x=>({...x,train_mse:x.td_mse})),...validation.rows.map(x=>({...x,val_mse:x.td_mse}))].sort((a:Row,b:Row)=>a.time-b.time)} series={[{key:'train_mse',name:'训练 MSE',color:'#42d6b0'},{key:'val_mse',name:'验证 MSE',color:'#70a7ff'}]} note="目标网络会变化；不能等同于实战胜率"/>
     </div>
     <div className="two-columns">

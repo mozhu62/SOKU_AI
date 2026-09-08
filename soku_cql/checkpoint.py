@@ -27,6 +27,8 @@ def load(path: Path):
         raise ValueError("checkpoint action/observation schema 不兼容，不允许部分加载")
     # 仅补齐内存中的历史配置，不改磁盘文件或权重；显式 YAML 才切换到新的 N。
     package["config"]["training"].setdefault("n_step", 1)
+    # 历史模型没有这个辅助项；仅 --resume 时保持关闭，显式配置/工作台应用才启用。
+    package["config"]["training"].setdefault("expert_imitation_weight", 0.0)
     saved_target = package.get("td_target")
     if saved_target is not None and saved_target != target_spec(package["config"]["training"]):
         raise ValueError("checkpoint 的 TD 目标版本或 N/gamma 与保存配置不一致")
