@@ -1,7 +1,7 @@
 seed: 42
 data:
   # 只读复用已有 NPZ，不复制数据、不导入 CQL 代码；服务器可改为自己的相对数据目录。
-  directory: ../soku_cql/data/replay_shards_resources_v4
+  directory: data/replay_shards_resources_v4
   split_file: data/train_val_split_resources_v4.json
   train_fraction: 0.8
   cache_gb: 4.0
