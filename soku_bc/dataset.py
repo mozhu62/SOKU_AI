@@ -17,6 +17,7 @@ from .action_space import (
 )
 from .resources import RESOURCE_SUFFIXES, resource_observation, validate_player_resources, normalization_arrays
 from .storage import atomic_json
+from .action_diagnostics import DIAGNOSTIC_VERSION, dataset_action_counts, merge_dataset_counts
 
 
 LOGGER = logging.getLogger(__name__)
@@ -225,6 +226,9 @@ class ReplayStore:
             self.info[name] = {"name": name, "split": "train" if name in train_names else "validation",
                                "frames": len(valid), "transitions": int(valid.sum()),
                                "joint_counts": np.bincount(shard["joint_action_id"][valid], minlength=ACTION_COUNT).tolist()}
+            # 复用正式标签的有效片段，一次预读时计数；不改采样、归一化或历史对齐。
+            self.info[name]["action_history"] = dataset_action_counts(
+                shard["joint_action_id"], shard["previous_joint_action_id"], valid)
             for key in ("card_overlap_cleaned_rows", "card_overlap_cleaned_on_load"):
                 self.info[name][key] = int(shard[key])
             cleaned = self.info[name]["card_overlap_cleaned_rows"]
@@ -247,6 +251,10 @@ class ReplayStore:
                     object_stats.update(shard[f"{side}_object_numerical"])
                     card_stats.update(shard[f"{side}_card_state"][:, list(CARD_NUMERICAL_INDICES)])
                     cost_stats.update(shard[f"{side}_hand_card_costs"][shard[f"{side}_hand_mask"].astype(bool)][:, None])
+        self.action_history = {
+            group: merge_dataset_counts([self.info[name]["action_history"] for name in split[group]])
+            for group in ("train", "validation")
+        }
         if len(shifts) != 1:
             raise ValueError("数据集中 action_shift 不一致；不能混合不同状态/动作帧对齐约定")
         optional_export = {key: [stats.export()[key][0] for stats in optional_stats] for key in ("mean", "std")}
@@ -296,6 +304,7 @@ class ReplayStore:
                              "transitions": sum(x["transitions"] for x in rows),
                              "joint_counts": np.sum([x["joint_counts"] for x in rows], 0).tolist(),
                              "optional_state_counts": np.sum([x["optional_state_counts"] for x in rows], 0).tolist()}
+            result[split].update(self.action_history[split])
             result[split]["neutral_fraction"] = result[split]["joint_counts"][NEUTRAL_ACTION_ID] / result[split]["transitions"]
             result[split]["card_overlap_cleaned_rows"] = sum(x["card_overlap_cleaned_rows"] for x in rows)
             result[split]["card_overlap_cleaned_on_load"] = sum(x["card_overlap_cleaned_on_load"] for x in rows)
@@ -305,6 +314,7 @@ class ReplayStore:
                 for side in ("self", "opponent")
             }
         result["split_hash"] = self.split["sha256"]
+        result["action_diagnostics_version"] = DIAGNOSTIC_VERSION
         result["card_overlap_policy"] = CARD_OVERLAP_POLICY
         return result
 

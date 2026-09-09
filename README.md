@@ -69,4 +69,6 @@ ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8796:127.0.0.1:8796 USER@SERVER
 
 模型的 `step_logits()` / `act()` 可供之后的 BC 推理接入，输入与现有资源版 CQL 相同，输出语义是分类 logits。**已有 CQL 实战入口不会直接加载 BC checkpoint；本次交付是独立 BC 网络、离线训练及训练前端，不改原实战端。**
 
+动作历史诊断新增“上一帧复制基线”和“动作切换帧准确率”，与总体 Top-1/Top-5、多数动作基线并列显示。详见 [指标定义、实际数据统计与兼容性](docs/action_history_diagnostics.md)。这些指标只做统计，不影响损失或 best 选优，旧日志缺字段不补零。
+
 详见 [网络与训练口径](docs/architecture.md) 和 [人工验收清单](docs/acceptance.md)。本次按要求仅交付源码并做静态核对，未编译、运行测试、启动训练或对局；测试源文件已提供，不代表已执行通过。

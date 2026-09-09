@@ -24,6 +24,13 @@ export function Diagnostics({state}:{state:Row}){
       <Stat title="平均最大概率" value={percent(last.confidence_mean)} note={`最大 |logit| ${number(last.logit_abs_max,4)}；高置信度不等于正确`}/>
       <Stat title="Neutral 数据 / 预测占比" value={`${percent(last.neutral_data_fraction)} / ${percent(last.neutral_pred_fraction)}`} note="5 + 无按钮 + NONE（ID 192）"/>
     </div>
+    <Card title="动作保持与切换诊断" note="全量基线不使用模型；切换准确率来自最近记录批的有效切换帧，不是额外训练目标">
+      <DataTable rows={[
+        {name:'训练（记录步）',baseline:last.train_previous_action_baseline??state.data?.train?.previous_action_baseline,accuracy:last.train_action_change_accuracy,top5:last.train_action_change_top5_accuracy,count:last.train_action_change_samples,fraction:last.train_action_change_fraction},
+        {name:'固定验证（抽样）',baseline:val.val_previous_action_baseline??state.data?.validation?.previous_action_baseline,accuracy:val.val_action_change_accuracy,top5:val.val_action_change_top5_accuracy,count:val.val_action_change_samples,fraction:val.val_action_change_fraction},
+      ]} columns={[{key:'name',title:'统计范围'},{key:'baseline',title:'全量上一帧复制基线',render:percent},{key:'accuracy',title:'切换 Top-1',render:percent},{key:'top5',title:'切换 Top-5',render:percent},{key:'count',title:'切换帧数'},{key:'fraction',title:'切换帧 / 全部有效帧',render:percent}]}/>
+    </Card>
+    <Trend title="训练：动作切换准确率" rows={rows} series={[{key:'train_action_change_accuracy',name:'切换帧 Top-1',color:'#f38caa',connectNulls:false},{key:'joint_accuracy',name:'总体 Top-1',color:'#42d6b0'},{key:'train_previous_action_baseline',name:'全量复制基线',color:'#b7a4ed',connectNulls:false}]} note="只记录诊断步，批次内容会变化；缺少切换帧时曲线断开，不显示虚假的 0%"/>
     <div className="two-columns"><Trend title="专家概率与预测置信度" rows={rows} series={[{key:'expert_probability',name:'专家动作概率',color:'#42d6b0'},{key:'confidence_mean',name:'最大动作概率',color:'#70a7ff'}]}/><Trend title="梯度范数" rows={rows} series={[{key:'grad_norm',name:'裁剪前全局范数',color:'#edbf6e'}]}/></div>
     <div className="two-columns"><Card title="同批专家动作分布"><JointFrequency catalog={state.action_catalog} counts={last.joint_data} total={last.samples}/></Card><Card title="同批模型 argmax 动作分布" note="频率不是单帧概率；可以切换全部 432 类"><JointFrequency catalog={state.action_catalog} counts={last.joint_pred} total={last.samples}/></Card></div>
     <Card title="验证：全部动作的召回率" note={`Step ${val.step??'—'} · 已覆盖 ${val.represented_actions??'—'} / 432 · 宏平均 ${percent(val.macro_recall)}；未出现的动作不记零分`}><DataTable rows={recall} columns={[{key:'name',title:'完整 Controller State'},{key:'id',title:'ID'},{key:'count',title:'专家样本数'},{key:'correct',title:'正确预测数'},{key:'recall',title:'召回率',render:percent}]}/></Card>

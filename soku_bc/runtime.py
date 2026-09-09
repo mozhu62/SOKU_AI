@@ -14,6 +14,7 @@ from filelock import FileLock
 
 from . import checkpoint
 from .action_space import ACTION_SCHEMA, action_catalog
+from .action_diagnostics import DIAGNOSTIC_VERSION, prefixed_history_metrics
 from .config import EDITABLE, resolve, validate
 from .dataset import ReplayStore, split_replays
 from .learner import Learner, aggregate_metrics
@@ -48,6 +49,7 @@ class Runtime:
         self.paused = True
         self.timings = {"data_wait": 0.0, "optimization": 0.0, "validation": 0.0, "save": 0.0, "paused": 0.0}
         self.last_progress = 0.0
+        self.action_baselines = {}
 
     def start(self):
         self.thread.start()
@@ -108,7 +110,8 @@ class Runtime:
 
     def _record(self, kind, values):
         cfg = self.config["training"]
-        row = {**values, "algorithm": "bc", "label_smoothing": cfg["label_smoothing"],
+        row = {**values, **self.action_baselines, "action_diagnostics_version": DIAGNOSTIC_VERSION,
+               "algorithm": "bc", "label_smoothing": cfg["label_smoothing"],
                "action_schema": ACTION_SCHEMA,
                "kind": kind, "step": self.step, "stage": self.stage, "time": time.time()}
         with (self.output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
@@ -216,6 +219,7 @@ class Runtime:
         if not rows or len(rows) != cfg["validation_batches"]:
             return
         result = aggregate_metrics(rows)
+        result.update(prefixed_history_metrics(result, "val"), **self.action_baselines)
         # 固定基线只由训练集决定，不能先看验证集再挑多数动作。
         majority = self.majority_action_id
         result.update(batches=len(rows), seconds=time.perf_counter() - started,
@@ -225,6 +229,9 @@ class Runtime:
         self.timings["validation"] += result["seconds"]
         self._record("validation", result)
         self.publish(latest_validation=result, timings=self.timings)
+        LOGGER.info("验证 step=%d copy_baseline=%s change_top1=%s change_top5=%s change_frames=%d/%d",
+                    self.step, result.get("val_previous_action_baseline"), result.get("val_action_change_accuracy"),
+                    result.get("val_action_change_top5_accuracy"), result["action_change_samples"], result["samples"])
         # best 只表示当前阶段的离线模仿误差最低，不代表对局胜率最高。
         if self.best is None or result["nll"] < self.best["value"]:
             self.best = {"metric": "validation_nll_v1", "value": result["nll"], "step": self.step, "stage": self.stage}
@@ -285,8 +292,19 @@ class Runtime:
             atomic_json(self.output / "config.json", self.config)
             atomic_json(self.output / "configs" / f"stage_{self.stage}_{time.time_ns()}.json", self.config)
             summary = self.store.summary()
+            self.action_baselines = {
+                "train_previous_action_baseline": summary["train"]["previous_action_baseline"],
+                "val_previous_action_baseline": summary["validation"]["previous_action_baseline"],
+                "train_dataset_action_change_fraction": summary["train"]["action_change_fraction"],
+                "val_dataset_action_change_fraction": summary["validation"]["action_change_fraction"],
+            }
+            for group in ("train", "validation"):
+                history = summary[group]
+                LOGGER.info("%s 固定数据：上一帧复制基线=%s，可比较历史=%d/%d，切换帧=%d（占全部有效帧 %s）",
+                            group, history["previous_action_baseline"], history["previous_action_samples"],
+                            history["valid_samples"], history["action_change_samples"], history["action_change_fraction"])
             self.majority_action_id = int(np.argmax(summary["train"]["joint_counts"]))
-            atomic_json(self.output / "dataset_summary.json", {**summary, "action_schema": ACTION_SCHEMA,
+            atomic_json(self.output / "dataset_summary.json", {**summary, **self.action_baselines, "action_schema": ACTION_SCHEMA,
                         "action_catalog": action_catalog(), "files": list(self.store.info.values())})
             self.publish(data=summary, model_spec=self.learner.model.spec, action_catalog=action_catalog(),
                          parameter_counts={name: sum(p.numel() for p in module.parameters())
@@ -336,6 +354,7 @@ class Runtime:
                 window_samples += result["samples"]
                 window_seconds += active
                 if diagnostic:
+                    result.update(prefixed_history_metrics(result, "train"), **self.action_baselines)
                     result.update(data_wait_seconds=wait, steps_per_second=window_steps / max(window_seconds, 1e-9),
                                   samples_per_second=window_samples / max(window_seconds, 1e-9),
                                   throughput_window_steps=window_steps, learning_rate=cfg["learning_rate"],
@@ -347,6 +366,9 @@ class Runtime:
                     LOGGER.info("step=%d/%d loss=%.5f NLL=%.5f top1=%.3f top5=%.3f speed=%.2f step/s",
                                 self.step, cfg["total_steps"], result["loss"], result["nll"],
                                 result["joint_accuracy"], result["joint_top5"], result["steps_per_second"])
+                    LOGGER.info("训练诊断 copy_baseline=%s change_top1=%s change_frames=%d/%d",
+                                result.get("train_previous_action_baseline"), result.get("train_action_change_accuracy"),
+                                result["action_change_samples"], result["samples"])
                     window_steps = window_samples = window_seconds = 0
                 self.publish(step=self.step, updates=self.updates, samples=self.samples)
                 if self.step % cfg["validation_interval"] == 0:

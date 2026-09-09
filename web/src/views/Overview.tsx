@@ -1,5 +1,6 @@
 import {Card,Stat,DataTable} from '../components/common';
 import {Trend} from '../components/Trend';
+import {ActionHistoryPanel} from '../components/ActionHistoryPanel';
 import {useHistory,type Row} from '../api';
 import {number,percent} from '../lib/utils';
 
@@ -22,8 +23,9 @@ export function Overview({state}:{state:Row}){
     {(train.error||validation.error)&&<p className="error">{train.error||validation.error}</p>}
     <div className="two-columns">
       <Trend title="训练与验证的模仿误差" rows={merged} series={[{key:'train_nll',name:'训练 NLL',color:'#42d6b0'},{key:'val_nll',name:'验证 NLL',color:'#70a7ff'}]} note="NLL 为未平滑交叉熵；越低表示给予专家动作的概率越高。均匀预测约为 6.07"/>
-      <Trend title="验证动作一致率" rows={validation.rows} series={[{key:'joint_accuracy',name:'Top-1',color:'#42d6b0'},{key:'joint_top5',name:'Top-5',color:'#70a7ff'},{key:'majority_baseline_accuracy',name:'训练集多数动作基线',color:'#edbf6e'}]} note="基线只由训练集选定；高频动作较多时不能只看总体准确率"/>
+      <Trend title="验证动作一致率" rows={validation.rows} series={[{key:'joint_accuracy',name:'Top-1',color:'#42d6b0'},{key:'joint_top5',name:'Top-5',color:'#70a7ff'},{key:'majority_baseline_accuracy',name:'多数动作基线',color:'#edbf6e'},{key:'val_previous_action_baseline',name:'上一帧复制基线（全量）',color:'#b7a4ed',connectNulls:false},{key:'val_action_change_accuracy',name:'切换帧 Top-1',color:'#f38caa',connectNulls:false}]} note="总体一致率与真正改变操作的能力分开观察；全量基线和本次验证抽样范围见下方"/>
     </div>
+    <ActionHistoryPanel state={state}/>
     <div className="two-columns">
       <Trend title="吞吐趋势" rows={train.rows} series={[{key:'samples_per_second',name:'有效帧 / 秒',color:'#42d6b0'}]}/>
       <Card title="时间花在哪里" note="累计活动时间与暂停时间分开"><div className="time-list">{Object.entries(state.timings||{}).map(([key,value])=><div key={key}><div><span>{timingLabels[key]||key}</span><span>{number(value,1)} s · {percent(elapsed?Number(value)/elapsed:null)}</span></div><progress max={elapsed||1} value={Number(value)}/></div>)}</div><p className="muted">取数时间仅统计实际等待；预取与 GPU 可以重叠。初始化扫描不计入。</p></Card>
@@ -35,6 +37,6 @@ export function Overview({state}:{state:Row}){
       <p>优先看验证 NLL 是否降低、完整动作一致率及各动作召回率是否提升。只有训练误差下降而验证误差上升，可能在过拟合。</p>
       <p className="muted">BC 学的是高手在相似状态下怎么按键，不优化伤害或胜负；离线模仿更准确不等于实战必然更强。归一化熵是分布诊断，不是在线探索奖励。</p>
     </Card>
-    <Card title="最近验证记录" note="固定种子、同阶段相同样本计划；有放回抽样，样本数包含重复帧"><DataTable rows={validation.rows.slice(-12).reverse()} columns={[{key:'step',title:'更新步'},{key:'stage',title:'阶段'},{key:'samples',title:'有效帧'},{key:'nll',title:'NLL',render:v=>number(v,5)},{key:'joint_accuracy',title:'Top-1',render:percent},{key:'joint_top5',title:'Top-5',render:percent},{key:'macro_recall',title:'已覆盖动作宏召回',render:percent},{key:'represented_actions',title:'覆盖动作数'}]}/></Card>
+    <Card title="最近验证记录" note="固定种子、同阶段相同样本计划；有放回抽样，样本数包含重复帧"><DataTable rows={validation.rows.slice(-12).reverse()} columns={[{key:'step',title:'更新步'},{key:'stage',title:'阶段'},{key:'samples',title:'有效帧'},{key:'nll',title:'NLL',render:v=>number(v,5)},{key:'joint_accuracy',title:'Top-1',render:percent},{key:'joint_top5',title:'Top-5',render:percent},{key:'val_previous_action_baseline',title:'上一帧复制基线',render:percent},{key:'val_action_change_accuracy',title:'切换 Top-1',render:percent},{key:'val_action_change_top5_accuracy',title:'切换 Top-5',render:percent},{key:'val_action_change_samples',title:'切换帧数'},{key:'val_action_change_fraction',title:'切换帧占比',render:percent},{key:'macro_recall',title:'已覆盖动作宏召回',render:percent},{key:'represented_actions',title:'覆盖动作数'}]}/></Card>
   </>;
 }

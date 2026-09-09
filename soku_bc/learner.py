@@ -9,6 +9,7 @@ from torch.nn import functional as F
 
 from .models import BCNetwork
 from .action_space import ACTION_COUNT, NEUTRAL_ACTION_ID, frequency_rows
+from .action_diagnostics import BATCH_COUNT_KEYS, BATCH_RATE_KEYS, batch_history_rates
 
 
 def device_for(name):
@@ -51,19 +52,21 @@ def classification_parts(logits, labels, mask, label_smoothing=0.0):
     return loss, {"logits": valid_logits, "labels": valid_labels}
 
 
-def classification_metrics(parts):
+@torch.no_grad()
+def classification_metrics(parts, previous_joint_action_id=None):
     logits, labels = parts["logits"].detach(), parts["labels"]
     log_prob = logits.log_softmax(-1)
     probability = log_prob.exp()
     confidence, prediction = probability.max(-1)
     correct = prediction == labels
+    top5_correct = (logits.topk(5, dim=-1).indices == labels[:, None]).any(-1)
     expert_log_prob = log_prob.gather(-1, labels[:, None]).squeeze(-1)
     entropy = -(probability * log_prob).sum(-1)
     keys = ("nll", "joint_accuracy", "joint_top5", "direction_accuracy", "combat_accuracy",
             "card_accuracy", "expert_probability", "confidence_mean", "entropy", "normalized_entropy",
             "neutral_data_fraction", "neutral_pred_fraction", "logit_abs_max")
     scalars = torch.stack((-expert_log_prob.mean(), correct.float().mean(),
-                           (logits.topk(5, dim=-1).indices == labels[:, None]).any(-1).float().mean(),
+                           top5_correct.float().mean(),
                            (prediction // 48 == labels // 48).float().mean(),
                            ((prediction % 48) // 3 == (labels % 48) // 3).float().mean(),
                            (prediction % 3 == labels % 3).float().mean(),
@@ -78,7 +81,29 @@ def classification_metrics(parts):
                   joint_correct=torch.bincount(labels[correct], minlength=ACTION_COUNT).cpu().tolist())
     result["joint_data_top"] = frequency_rows(result["joint_data"])
     result["joint_pred_top"] = frequency_rows(result["joint_pred"])
+    if previous_joint_action_id is not None:
+        previous = previous_joint_action_id.detach()
+        if previous.shape != labels.shape:
+            raise ValueError("动作历史诊断没有与有效标签逐帧对齐")
+        eligible = (previous >= 0) & (previous < ACTION_COUNT)
+        same = previous == labels
+        changed = eligible & ~same
+        counts = torch.stack((eligible.sum(), (eligible & same).sum(), changed.sum(),
+                              (changed & correct).sum(), (changed & top5_correct).sum(),
+                              (eligible & correct).sum())).cpu().tolist()
+        result.update(dict(zip(BATCH_COUNT_KEYS, counts)))
+        result.update(batch_history_rates(result, len(labels)))
     return result
+
+
+def diagnostic_previous_actions(batch, burn_in):
+    # 从同一批 observation 取真实历史：跳过 burn-in，应用与 CE 完全相同的 mask。
+    # 若批次已镜像，这里读取的当前标签和历史动作自然使用同一增强坐标系。
+    mask = batch["mask"]
+    previous = batch["observation"]["previous_joint_action_id"][:, burn_in:burn_in + mask.shape[1]]
+    if previous.shape != mask.shape:
+        raise ValueError("动作历史长度与监督片段不一致")
+    return previous[mask]
 
 
 def aggregate_metrics(rows):
@@ -88,7 +113,7 @@ def aggregate_metrics(rows):
         raise ValueError("验证没有有效样本")
     result = {}
     for key in rows[0]:
-        if key in ("samples", "joint_data_top", "joint_pred_top"):
+        if key in ("samples", "joint_data_top", "joint_pred_top", *BATCH_COUNT_KEYS, *BATCH_RATE_KEYS):
             continue
         if key in ("joint_data", "joint_pred", "joint_correct"):
             result[key] = np.sum([row[key] for row in rows], axis=0, dtype=np.int64).tolist()
@@ -103,6 +128,10 @@ def aggregate_metrics(rows):
                   macro_recall=float(np.mean(correct[represented] / data[represented])),
                   joint_data_top=frequency_rows(result["joint_data"]),
                   joint_pred_top=frequency_rows(result["joint_pred"]))
+    # 各批切换帧数量不同，必须合并分子/分母；不可按总帧数平均切换准确率。
+    if all(all(key in row for key in BATCH_COUNT_KEYS) for row in rows):
+        result.update({key: sum(row[key] for row in rows) for key in BATCH_COUNT_KEYS})
+        result.update(batch_history_rates(result, count))
     return result
 
 
@@ -169,7 +198,8 @@ class Learner:
         result = {"optimizer_skipped": skipped, "samples": len(parts["labels"])}
         # 完整动作频率、概率与模块权重差只在记录步计算，减少 GPU/CPU 同步。
         if diagnostics:
-            result.update(classification_metrics(parts), loss=float(loss.detach()),
+            result.update(classification_metrics(parts, diagnostic_previous_actions(batch, self.config["training"]["burn_in"])),
+                          loss=float(loss.detach()),
                           grad_norm=float(grad) if torch.isfinite(grad) else None,
                           module_gradients={name: value if math.isfinite(value) else None for name, value in gradients.items()})
             result["module_changes"] = {name: float(torch.stack([(p.detach() - old).float().square().sum()
@@ -183,7 +213,9 @@ class Learner:
     @torch.no_grad()
     def validate_batch(self, raw_batch):
         self.model.eval()
-        loss, parts = self.losses(tensor_batch(raw_batch, self.device))
+        batch = tensor_batch(raw_batch, self.device)
+        loss, parts = self.losses(batch)
         if not torch.isfinite(loss):
             raise FloatingPointError("验证损失出现 NaN/Inf")
-        return {**classification_metrics(parts), "loss": float(loss)}
+        return {**classification_metrics(parts, diagnostic_previous_actions(batch, self.config["training"]["burn_in"])),
+                "loss": float(loss)}
