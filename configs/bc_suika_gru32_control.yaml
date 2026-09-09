@@ -1,8 +1,8 @@
 seed: 42
 data:
   # 两个对照配置必须使用同一目录和现有划分；服务器上可同时改为自己的相对路径。
-  directory: ../soku_cql/data/replay_shards_resources_v4_mirror
-  split_file: ../soku_cql/data/replay_shards_resources_v4_mirror/train_val_split.json
+  directory: data/replay_shards_resources_v4_mirror
+  split_file: data/replay_shards_resources_v4_mirror/train_val_split.json
   train_fraction: 0.8
   cache_gb: 4.0
   vertical_positive_is_down: true
