@@ -5,7 +5,7 @@ import unittest
 import torch
 from torch.nn import functional as F
 
-from soku_bc.config import DEFAULTS, MODULES
+from soku_bc.config import DEFAULTS, active_modules
 from soku_bc.learner import Learner, classification_parts, classification_metrics, aggregate_metrics
 from soku_bc.models import BCNetwork
 from tests.fixtures import tensor_observation
@@ -48,7 +48,7 @@ class BCLearningTests(unittest.TestCase):
     def test_architecture_causal_sequence_and_step_inference(self):
         model = BCNetwork(copy.deepcopy(DEFAULTS['model'])).eval()
         obs = tensor_observation(batch=2, length=5)
-        self.assertEqual(tuple(model.module_groups()), MODULES)
+        self.assertEqual(tuple(model.module_groups()), active_modules(DEFAULTS['model']))
         self.assertEqual((model.gru.input_size, model.gru.hidden_size, model.gru.num_layers), (256, 128, 1))
         self.assertEqual(model.current_encoder.previous_action.num_embeddings, 433)
         self.assertEqual(model.current_encoder.network[0].out_features, 256)
@@ -72,7 +72,7 @@ class BCLearningTests(unittest.TestCase):
     def test_frozen_backbone_and_classifier_only_update(self):
         config = copy.deepcopy(DEFAULTS)
         config['training'].update(device='cpu', amp=False, burn_in=0,
-                                  frozen_modules=[name for name in MODULES if name != 'policy_head'])
+                                  frozen_modules=[name for name in active_modules(config['model']) if name != 'policy_head'])
         learner = Learner(config)
         self.assertFalse(hasattr(learner, 'target'))
         before = {key: value.clone() for key, value in learner.model.state_dict().items()}

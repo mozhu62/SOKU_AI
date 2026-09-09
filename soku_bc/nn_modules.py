@@ -23,7 +23,7 @@ def hidden_mlp(input_dim: int, hidden_dim: int, layers: int = 2) -> nn.Sequentia
 
 def initialize(module: nn.Module) -> None:
     """编码层统一随机初始化；策略 logits 末层在模型中单独设置 gain。"""
-    if isinstance(module, nn.Linear):
+    if isinstance(module, (nn.Linear, nn.Conv1d)):
         nn.init.orthogonal_(module.weight, gain=math.sqrt(2))
         if module.bias is not None:
             nn.init.zeros_(module.bias)

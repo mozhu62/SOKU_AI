@@ -8,6 +8,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 NETWORK_VERSION = "soku_bc_recurrent_joint432_v1"
+TCN_NETWORK_VERSION = "soku_bc_tcn32_joint432_v1"
+TEMPORAL_MODES = ("gru", "tcn")
 MODEL_DEFAULTS = {
     "action_vocab_size": 2048, "block_vocab_size": 512, "weather_vocab_size": 32,
     "action_embedding_dim": 32, "block_embedding_dim": 8, "weather_embedding_dim": 8,
@@ -16,6 +18,7 @@ MODEL_DEFAULTS = {
     "object_embedding_mode": "separate",
     "skill_embedding_dim": 8, "skill_level_embedding_dim": 4, "previous_action_embedding_dim": 32,
     "card_vocab_size": 512, "card_embedding_dim": 16,
+    "temporal_mode": "gru",
 }
 DEFAULTS = {
     "seed": 42,
@@ -32,7 +35,19 @@ DEFAULTS = {
     "output": {"directory": "outputs/bc_suika_joint432_v1"},
     "web": {"host": "127.0.0.1", "port": 8796, "port_attempts": 30},
 }
-MODULES = ("current_encoder", "object_encoder", "fusion", "gru", "memory_fusion", "policy_head")
+MODULES = ("current_encoder", "object_encoder", "fusion", "gru", "tcn", "memory_fusion", "policy_head")
+
+
+def network_version_for(model):
+    mode = model.get("temporal_mode", "gru")
+    if mode not in TEMPORAL_MODES:
+        raise ValueError("model.temporal_mode 只允许 gru 或 tcn")
+    return TCN_NETWORK_VERSION if mode == "tcn" else NETWORK_VERSION
+
+
+def active_modules(model):
+    temporal = model.get("temporal_mode", "gru")
+    return tuple(name for name in MODULES if name not in ("gru", "tcn") or name == temporal)
 # 运行中可调项只在暂停后应用；改变输入、结构和数据划分必须另开训练。
 EDITABLE = {
     "learning_rate": (1e-8, 0.01, "float", "学习率"),
@@ -54,6 +69,9 @@ def resolve(path: str | Path) -> Path:
 
 
 def validate(config: dict) -> dict:
+    # 老 GRU 配置缺少模式字段时显式补为 gru，权重形状和前向语义保持不变。
+    config["model"] = {**MODEL_DEFAULTS, **config["model"]}
+    network_version_for(config["model"])
     if isinstance(config["seed"], bool) or not isinstance(config["seed"], int) or config["seed"] < 0:
         raise ValueError("seed 必须为非负整数")
     cfg = config["training"]
@@ -66,11 +84,16 @@ def validate(config: dict) -> dict:
     for key, lo in (("sequence_length", 1), ("burn_in", 0), ("replays_per_batch", 1), ("cpu_threads", 1)):
         if type(cfg[key]) is not int or not lo <= cfg[key] <= 4096:
             raise ValueError(f"training.{key} 超出范围")
+    if config["model"]["temporal_mode"] == "tcn" and cfg["burn_in"] != 31:
+        raise ValueError("TCN32 必须设置 training.burn_in=31，表示监督段之前的真实上下文，不是 GRU 预热")
     if type(cfg["amp"]) is not bool or type(cfg["prefetch_batches"]) is not int or not 1 <= cfg["prefetch_batches"] <= 8:
         raise ValueError("amp 必须为布尔值，prefetch_batches 必须在 1 到 8 之间")
     frozen = cfg["frozen_modules"]
-    if not isinstance(frozen, list) or any(x not in MODULES for x in frozen) or set(frozen) == set(MODULES):
+    if (not isinstance(frozen, list) or any(x not in MODULES for x in frozen)
+            or set(active_modules(config["model"])) <= set(frozen)):
         raise ValueError("冻结模块无效或全部模块均被冻结")
+    if config["model"]["temporal_mode"] == "gru" and "tcn" in frozen:
+        raise ValueError("GRU 模式没有 TCN 模块，不能设置 TCN 冻结")
     if config["data"]["train_fraction"] != 0.8:
         raise ValueError("本版本固定按整份 REP 进行 8:2 划分")
     cache_gb = config["data"]["cache_gb"]

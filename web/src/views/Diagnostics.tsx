@@ -4,11 +4,11 @@ import {useHistory,type Row} from '../api';
 import {number,percent} from '../lib/utils';
 import {JointFrequency} from '../components/JointActions';
 
-export const moduleLabels:Row={current_encoder:'当前状态（含资源 / 上帧输入）',object_encoder:'弹幕集合编码器',fusion:'特征融合',gru:'GRU 记忆',memory_fusion:'记忆融合',policy_head:'BC 分类头 · 432'};
+export const moduleLabels:Row={current_encoder:'当前状态（含资源 / 上帧输入）',object_encoder:'弹幕集合编码器',fusion:'特征融合',gru:'GRU 记忆',tcn:'TCN · 连续 32 帧',memory_fusion:'记忆融合',policy_head:'BC 分类头 · 432'};
 
 export function Diagnostics({state}:{state:Row}){
   const {rows,error}=useHistory('train'),last=state.latest_train||{},val=state.latest_validation||{};
-  const modules=Object.entries(state.parameter_counts||{}).map(([key,count])=>({name:moduleLabels[key]||key,count,gradient:last.module_gradients?.[key],change:last.module_changes?.[key],frozen:state.config?.training?.frozen_modules?.includes(key)?'冻结':'训练'}));
+  const modules=Object.entries(state.parameter_counts||{}).map(([key,count])=>({name:moduleLabels[key]||key,count,gradient:last.module_gradients?.[key],change:last.module_changes?.[key],frozen:state.module_status?.[key]?.bypassed?'旁路 · 不参与输出':state.module_status?.[key]?.frozen?'冻结 · 仍参与计算':'训练'}));
   const recall=val.joint_data?(state.action_catalog||[]).map((name:string,id:number)=>({id,name,count:val.joint_data[id],correct:val.joint_correct?.[id],recall:val.joint_data[id]>0?val.joint_correct[id]/val.joint_data[id]:null})).sort((a:Row,b:Row)=>b.count-a.count):[];
   return <><div className="section-intro"><div><h1>模仿学习诊断</h1><p>概率来自记录步更新前的同批状态；梯度和参数变化来自该次更新。</p></div><span>Step {number(last.step,0)}</span></div>
     {error&&<p className="error">{error}</p>}

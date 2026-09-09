@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import EDITABLE, MODULES, ROOT
+from .experiments import comparison_catalog
 
 WEB_DIST = ROOT / "web" / "dist"
 
@@ -128,10 +129,18 @@ def create_app(runtime, port):
     @app.get("/api/parameters")
     def parameters():
         state = runtime.snapshot()
-        return {"config": state["config"], "stage": state["stage"], "source": state["config_source"],
-                "locks": state["locked_parameters"], "modules": MODULES,
+        return {"config": state["config"], "stage": state["stage"], "output": state["output"], "source": state["config_source"],
+                "locks": state["locked_parameters"],
+                "modules": [name for name in MODULES if name != "tcn" or state["config"]["model"].get("temporal_mode") == "tcn"],
+                "module_status": state.get("module_status", {}), "temporal": state.get("temporal"),
                 "fields": [{"key": key, "min": value[0], "max": value[1], "type": value[2], "label": value[3]}
                            for key, value in EDITABLE.items()]}
+
+    @app.get("/api/experiments")
+    def experiments():
+        state = runtime.snapshot()
+        return {"rows": comparison_catalog(state.get("comparison")), "current_output": state["output"],
+                "current_conditions_hash": state.get("comparison", {}).get("conditions_hash")}
 
     @app.get("/api/history")
     def history(kind="train", offset: int = 0, limit: int = 200):
@@ -150,11 +159,13 @@ def create_app(runtime, port):
     @app.get("/api/models")
     def models():
         rows = []
+        # 切换实验只由训练线程执行；同一次目录枚举固定使用一个输出目录。
+        output = runtime.output
         for pattern in ("last.pt", "best.pt", "best_stage_*.pt", "snapshots/*.pt"):
-            for path in runtime.output.glob(pattern):
-                if path.is_file() and path.resolve().is_relative_to(runtime.output):
+            for path in output.glob(pattern):
+                if path.is_file() and path.resolve().is_relative_to(output):
                     stat = path.stat()
-                    rows.append({"name": path.relative_to(runtime.output).as_posix(),
+                    rows.append({"name": path.relative_to(output).as_posix(),
                                  "size_mb": stat.st_size / 1024 ** 2, "modified": stat.st_mtime})
         return sorted(rows, key=lambda row: row["modified"], reverse=True)[:200]
 

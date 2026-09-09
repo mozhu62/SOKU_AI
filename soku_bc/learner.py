@@ -8,6 +8,7 @@ import torch
 from torch.nn import functional as F
 
 from .models import BCNetwork
+from .config import active_modules
 from .action_space import ACTION_COUNT, NEUTRAL_ACTION_ID, frequency_rows
 from .action_diagnostics import BATCH_COUNT_KEYS, BATCH_RATE_KEYS, batch_history_rates
 
@@ -44,7 +45,8 @@ def classification_parts(logits, labels, mask, label_smoothing=0.0):
         raise ValueError("BC logits、标签与有效 mask 形状不一致")
     if mask.dtype != torch.bool or labels.dtype != torch.long:
         raise ValueError("有效 mask 必须为 bool，Joint Action 标签必须为 int64")
-    # 先筛选再计算 CE；padding 和 burn-in 均不参与损失、命中率或梯度。
+    # 先筛选再计算 CE；padding/前导帧不产生独立标签损失或命中率。
+    # GRU 预热不反传；TCN 的真实前导特征仍可接收后续监督帧传回的梯度。
     valid_logits, valid_labels = logits.float()[mask], labels[mask]
     if not len(valid_labels):
         raise ValueError("BC 批次没有有效动作标签")
@@ -157,8 +159,10 @@ class Learner:
     def apply_settings(self, config):
         self.config = config
         cfg = config["training"]
+        active = set(active_modules(config["model"]))
         for name, module in self.model.module_groups().items():
-            module.requires_grad_(name not in cfg["frozen_modules"])
+            # 被旁路的 GRU 即使不在用户冻结列表中，也不能重新进入优化。
+            module.requires_grad_(name in active and name not in cfg["frozen_modules"])
             for parameter in module.parameters():
                 parameter.grad = None
         for group in self.optimizer.param_groups:

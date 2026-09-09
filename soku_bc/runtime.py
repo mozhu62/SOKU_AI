@@ -10,6 +10,7 @@ import traceback
 from collections import OrderedDict, deque
 
 import numpy as np
+import torch
 from filelock import FileLock
 
 from . import checkpoint
@@ -20,6 +21,7 @@ from .dataset import ReplayStore, split_replays
 from .learner import Learner, aggregate_metrics
 from .prefetch import BatchPrefetch
 from .storage import atomic_json
+from .experiments import COMPARISON_VERSION, comparison_conditions, experiment_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class Runtime:
                       "best": None, "error": None, "data": None, "locked_parameters": []}
         self.thread = threading.Thread(target=self._run, name="bc-learner", daemon=False)
         self.learner = None
+        self.store = None
         self.prefetch = None
         self.step = self.updates = self.samples = self.stage = 0
         self.best = None
@@ -50,6 +53,7 @@ class Runtime:
         self.timings = {"data_wait": 0.0, "optimization": 0.0, "validation": 0.0, "save": 0.0, "paused": 0.0}
         self.last_progress = 0.0
         self.action_baselines = {}
+        self.experiment_locks = []
 
     def start(self):
         self.thread.start()
@@ -82,7 +86,7 @@ class Runtime:
                 if old["fingerprint"] != fingerprint:
                     raise ValueError("同一请求编号不能用于不同命令")
                 return copy.deepcopy(old)
-            if name not in ("resume", "pause", "save", "stop", "validate", "configure", "locks"):
+            if name not in ("resume", "pause", "save", "stop", "validate", "configure", "locks", "experiment"):
                 raise ValueError("未知控制命令")
             if self.state["state"] in ("error", "stopped"):
                 raise ValueError("训练线程已退出，请重新启动程序")
@@ -112,12 +116,46 @@ class Runtime:
         cfg = self.config["training"]
         row = {**values, **self.action_baselines, "action_diagnostics_version": DIAGNOSTIC_VERSION,
                "algorithm": "bc", "label_smoothing": cfg["label_smoothing"],
-               "action_schema": ACTION_SCHEMA,
+               "action_schema": ACTION_SCHEMA, "temporal_mode": self.config["model"]["temporal_mode"],
+               "network_version": self.learner.model.spec["network_version"],
+               "context_frames": 32 if self.config["model"]["temporal_mode"] == "tcn" else None,
+               "prefix_frames": cfg["burn_in"], "module_status": self.learner.model.module_status(),
                "kind": kind, "step": self.step, "stage": self.stage, "time": time.time()}
         with (self.output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
         with self.lock:
             self.history.append(row)
+        self._write_comparison()
+
+    def _model_state(self):
+        return {"model_spec": self.learner.model.spec,
+                "temporal": {**self.learner.model.spec["temporal"],
+                             "prefix_frames": self.config["training"]["burn_in"],
+                             "sequence_length": self.config["training"]["sequence_length"]},
+                "module_status": self.learner.model.module_status(),
+                "parameter_counts": {name: sum(p.numel() for p in module.parameters())
+                                     for name, module in self.learner.model.module_groups().items()}}
+
+    def _write_comparison(self):
+        if self.learner is None or self.store is None:
+            return
+        conditions, fingerprint = comparison_conditions(self.config, self.split["sha256"], self.store.normalization)
+        with self.lock:
+            rows = [row for row in self.history if row.get("stage") == self.stage]
+        train = next((row for row in reversed(rows) if row["kind"] == "train"), {})
+        validations = [row for row in rows if row["kind"] == "validation"][-100:]
+        fields = ("step", "samples", "nll", "joint_accuracy", "joint_top5", "val_action_change_accuracy",
+                  "val_action_change_top5_accuracy", "val_action_change_samples", "val_batch_previous_action_baseline")
+        summary = {"version": COMPARISON_VERSION, "name": self.output.name, "output": str(self.output),
+                   "temporal_mode": self.config["model"]["temporal_mode"], "stage": self.stage,
+                   "step": self.step, "updates": self.updates, "samples": self.samples,
+                   "conditions": conditions, "conditions_hash": fingerprint, "best": self.best,
+                   "validation": [{key: row.get(key) for key in fields} for row in validations],
+                   "samples_per_second": train.get("samples_per_second"),
+                   "steps_per_second": train.get("steps_per_second"),
+                   "module_status": self.learner.model.module_status(), "updated": time.time()}
+        atomic_json(self.output / "comparison.json", summary)
+        self.publish(comparison=summary)
 
     def _save(self, name="last.pt", snapshot=False):
         started = time.perf_counter()
@@ -129,6 +167,7 @@ class Runtime:
                             self.step, self.updates, self.samples, self.best, self.stage)
         self.timings["save"] += time.perf_counter() - started
         self.publish(last_saved={"path": str(self.output / name), "step": self.step, "time": time.time()}, timings=self.timings)
+        self._write_comparison()
 
     def _close_prefetch(self):
         if self.prefetch:
@@ -138,10 +177,12 @@ class Runtime:
     def _apply(self, values):
         if not self.paused:
             raise ValueError("请先暂停，待当前更新结束后再应用参数")
-        if set(values) - {"training", "expected_stage"}:
+        if set(values) - {"training", "expected_stage", "expected_output"}:
             raise ValueError("配置请求包含未知字段")
         if values.get("expected_stage") != self.stage:
             raise ValueError("页面配置已过期，请刷新后重新编辑")
+        if "expected_output" in values and values["expected_output"] != str(self.output):
+            raise ValueError("已切换实验，不能把旧页面的参数应用到新模型")
         changes = values.get("training", {})
         if not isinstance(changes, dict) or set(changes) - (set(EDITABLE) | {"frozen_modules"}):
             raise ValueError("只能修改表单列出的运行参数")
@@ -161,8 +202,74 @@ class Runtime:
         atomic_json(self.output / "config.json", config)
         self._record("configuration", {"previous": old["training"], "current": config["training"]})
         self.publish(config=config, config_source="工作台应用值（已保存配置快照）", stage=self.stage, best=None,
-                     latest_train=None, latest_validation=None)
+                     latest_train=None, latest_validation=None, **self._model_state())
         self._save()
+
+    def _new_experiment(self, values):
+        if not self.paused:
+            raise ValueError("请先暂停，等待当前更新结束后创建时序实验")
+        if (set(values) - {"name", "temporal_mode", "freeze_gru", "expected_stage", "expected_output", "confirm"}
+                or values.get("confirm") is not True):
+            raise ValueError("创建实验需要明确确认；只支持随机初始化的独立分支")
+        if values.get("expected_stage") != self.stage or values.get("expected_output") != str(self.output):
+            raise ValueError("实验页面已过期，请刷新后重试")
+        mode = values.get("temporal_mode")
+        if mode not in ("gru", "tcn") or type(values.get("freeze_gru", False)) is not bool:
+            raise ValueError("时序模式或 GRU 冻结设置无效")
+        if self.snapshot()["locked_parameters"]:
+            raise ValueError("创建随机实验会清空冻结设置；请先显式解除参数锁")
+        target = experiment_path(values.get("name"))
+        if target.exists():
+            raise ValueError("实验目录已存在，请填写新名称；不会覆盖现有模型")
+        config = copy.deepcopy(self.config)
+        config["model"]["temporal_mode"] = mode
+        # 两组新实验都读取 31 帧前导数据，监督起点、标签和验证抽样保持一致。
+        config["training"].update(burn_in=31, frozen_modules=["gru"] if mode == "gru" and values.get("freeze_gru") else [])
+        config["output"]["directory"] = target.relative_to(resolve(".")).as_posix()
+        validate(config)
+        self._close_prefetch()
+        try:
+            self._save()
+        except OSError as error:
+            raise ValueError(f"原模型保存失败，未创建新实验，仍保持暂停：{error}") from error
+        cpu_rng = torch.get_rng_state()
+        cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []
+        branch_lock = None
+        try:
+            target.mkdir(parents=True, exist_ok=False)
+            branch_lock = FileLock(str(target / ".training.lock"))
+            branch_lock.acquire(timeout=0)
+            learner = Learner(config)
+            # 全部新文件写入成功后才交接运行对象；失败时原模型和计数仍保持原样。
+            checkpoint.save(target / "last.pt", learner, config, self.split, self.store.normalization, 0, 0, 0, None, 0)
+            atomic_json(target / "config.json", config)
+            atomic_json(target / "normalization.json", self.store.normalization)
+            atomic_json(target / "dataset_summary.json", {**self.store.summary(), **self.action_baselines})
+            atomic_json(target / "configs" / "stage_0.json", config)
+            atomic_json(target / "experiment.json", {"initialization": "random", "parent_run": str(self.output),
+                                                     "parent_step": self.step, "temporal_mode": mode,
+                                                     "shared_initialization_seed": config["seed"]})
+        except Exception as error:
+            torch.set_rng_state(cpu_rng)
+            if cuda_rng:
+                torch.cuda.set_rng_state_all(cuda_rng)
+            if branch_lock is not None:
+                branch_lock.release()
+            raise ValueError(f"创建实验失败，原模型仍保留且已暂停；新目录中的文件保留供排查：{error}") from error
+        self.experiment_locks.append(branch_lock)
+        self.output, self.config, self.learner = target, config, learner
+        self.resume_path = None
+        self.step = self.updates = self.samples = self.stage = 0
+        self.best = None
+        self.timings = {key: 0.0 for key in self.timings}
+        with self.lock:
+            self.history.clear()
+        self.publish(config=config, config_source="工作台随机时序实验", output=str(target),
+                     step=0, updates=0, samples=0, stage=0, best=None, latest_train=None, latest_validation=None,
+                     timings=self.timings, locked_parameters=[], error=None, **self._model_state(),
+                     last_saved={"path": str(target / "last.pt"), "step": 0, "time": time.time()},
+                     message=f"{mode.upper()} 随机实验已创建；原模型已保存。点击开始才训练新分支。")
+        self._write_comparison()
 
     def _handle_commands(self):
         while True:
@@ -190,6 +297,8 @@ class Runtime:
                     self._validate()
                 elif name == "configure":
                     self._apply(value)
+                elif name == "experiment":
+                    self._new_experiment(value)
                 elif name == "locks":
                     if not self.paused:
                         raise ValueError("请暂停后修改参数锁")
@@ -198,7 +307,8 @@ class Runtime:
                         raise ValueError("参数锁列表无效")
                     atomic_json(self.output / "parameter_locks.json", keys)
                     self.publish(locked_parameters=keys)
-                self._finish_request(identifier, "completed", "已执行" if name != "stop" else "正在停止并保存")
+                message = "新实验已随机初始化并保持暂停；原模型已保存" if name == "experiment" else "已执行"
+                self._finish_request(identifier, "completed", message if name != "stop" else "正在停止并保存")
             except ValueError as error:
                 self._finish_request(identifier, "failed", str(error))
             self.publish(state="paused" if self.paused else "training")
@@ -311,16 +421,17 @@ class Runtime:
                                            for name, module in self.learner.model.module_groups().items()},
                          device=str(self.learner.device), amp=self.learner.amp, locked_parameters=locks,
                          step=self.step, updates=self.updates, samples=self.samples, stage=self.stage, best=self.best)
+            self.publish(**self._model_state())
             self._save()
             self.paused = not self.autostart
             self.publish(state="paused" if self.paused else "training", message="离线数据就绪；验证集仅用于评估")
             window_steps = window_samples = window_seconds = 0
-            window_stage = self.stage
+            window_stage = (self.output, self.stage)
             while not self.stop_event.is_set():
                 self._handle_commands()
-                if window_stage != self.stage:
+                if window_stage != (self.output, self.stage):
                     window_steps = window_samples = window_seconds = 0
-                    window_stage = self.stage
+                    window_stage = (self.output, self.stage)
                 if self.stop_event.is_set():
                     break
                 if self.step >= self.config["training"]["total_steps"]:
@@ -389,6 +500,8 @@ class Runtime:
                 pass
         finally:
             self._close_prefetch()
+            for branch_lock in self.experiment_locks:
+                branch_lock.release()
             with self.lock:
                 for row in self.requests.values():
                     if row["status"] == "queued":

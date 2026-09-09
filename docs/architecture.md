@@ -9,8 +9,8 @@
 | Current State | 连续量/战术量/类别 embedding/资源/上帧动作拼接 → Linear(input,256) → LayerNorm → SiLU → Linear(256,256) → LayerNorm → SiLU |
 | Object | 每侧最多 3 个；8 数值 + action/block embedding → 共享两层 64D MLP；masked mean 64 + max 64 = 每侧 128D |
 | Fusion | 256 + 128 + 128 = 512 → 两层 256D MLP，各含 LayerNorm/SiLU |
-| GRU | 单层 input=256、hidden=128，离线序列训练 |
-| Memory Fusion | 当前特征 256 + GRU 128 = 384 → Linear(384,256) → LayerNorm → SiLU |
+| 时序分支 | 默认 GRU：单层 input=256、hidden=128；可选 TCN32：256→128，五层 kernel=2、dilation=1/2/4/8/16 因果残差块 |
+| Memory Fusion | 当前特征 256 + 活动时序分支 128 = 384 → Linear(384,256) → LayerNorm → SiLU |
 | BC Policy Head | Linear(256,128) → SiLU → Linear(128,432)，输出原始 logits |
 
 保留现有对象截断和 embedding 共享方式，不扩对象数量，不加 Attention/Transformer/GNN。唯一分类头没有独立方向或按钮子头。
@@ -36,7 +36,7 @@ joint_action_id = (direction - 1) * 48 + combat_mask * 3 + card_command
 
 一份样本是一个连续状态序列及每帧的专家完整按键标签。默认 B=32、学习长度 L=32、burn-in=16，最多 1024 个有效监督帧/更新。短片段补齐但不计损失，不跨局或断帧拼接。
 
-1. burn-in 在 no_grad 下恢复 GRU 记忆；零长度历史严格从零记忆开始。
+1. GRU 的 burn-in 在 no_grad 下恢复记忆；零长度历史严格从零记忆开始。TCN 模式必须设 burn_in=31，真实前导右对齐到监督段之前，空位逐层 mask；没有未来帧输入，前导不产生标签 CE，但可接收后续监督帧梯度。
 2. 学习片段输出 `[B,L,432]` 的 logits，只筛选有效帧。
 3. 使用专家 Joint ID 的交叉熵：`loss = mean(-log softmax(logits)[expert_id])`。
 4. AdamW 更新可训练模块；冻结参数 requires_grad=False 并清梯度，保留优化器分组和未冻结状态。
@@ -47,7 +47,7 @@ joint_action_id = (direction - 1) * 48 + combat_mask * 3 + card_command
 
 ## 4. 效率与可复现性
 
-复用 DQN/CQL 风格的有限容量 NPZ LRU 缓存；每批从少量 REP 批量索引；后台 CPU 预取、CUDA 固定页内存/非阻塞搬运、可选 AMP，序列通过融合 GRU 执行。只计算一个网络，没有未来 TD 状态尾段、目标网络前向或软更新。
+复用 DQN/CQL 风格的有限容量 NPZ LRU 缓存；每批从少量 REP 批量索引；后台 CPU 预取、CUDA 固定页内存/非阻塞搬运、可选 AMP，序列通过 GRU 或因果 TCN 执行。只计算一个活动策略网络，没有未来 TD 状态尾段、目标网络前向或软更新。TCN 模式保留 GRU 参数仅为显示冻结/旁路状态，不执行 GRU 前向。
 
 采样按有效帧数加权、有放回。训练随机数由 seed/step 派生；暂停丢弃预取后继续不会错位。验证使用独立固定 seed 及批次计划，不消耗训练采样随机数；不是每次遍历整个验证集。训练帧数包含重复采样，不等于完整 epoch。
 
@@ -67,10 +67,12 @@ joint_action_id = (direction - 1) * 48 + combat_mask * 3 + card_command
 | macro_recall | 对该次验证实际出现的动作，逐类召回率再平均；未出现动作显示未记录 |
 | 多数动作基线 | 始终输出训练集最多动作，在这批验证上的命中率；不根据验证标签挑动作 |
 
-所有分类误差按有效帧加权合并，频数直接求和。网页频率是多个状态的 argmax 统计，不能当作单帧概率。最佳模型按当前配置阶段最低验证 NLL 保存；胜负、伤害差需要之后在独立实战验证。
+所有分类误差按有效帧加权合并，频数直接求和。网页频率是多个状态的 argmax 统计，不能当作单帧概率。最佳模型按当前配置阶段最低验证 NLL 保存；胜负、伤害差通过独立的 `scripts/play.py` 实战入口验证，不改变训练选优规则。
 
 ## 6. 模型格式与续训
 
-`network_version=soku_bc_recurrent_joint432_v1`，`algorithm=bc`，输出语义 `categorical_logits`；仅保存一个 model state_dict、优化器、AMP scaler、配置、归一化、固定划分 hash、计数及 Torch RNG。临时文件写完后原子替换目标。
+GRU 使用 `network_version=soku_bc_recurrent_joint432_v1`，TCN 使用 `soku_bc_tcn32_joint432_v1`；均为 `algorithm=bc`、`categorical_logits`。保存 model state_dict、优化器、AMP scaler、配置、归一化、固定划分 hash、计数及 Torch RNG，临时文件写完后原子替换。旧 GRU 包只在内存中补充等价的 temporal 元数据，不改变权重；TCN 必须包含明确的 32 帧协议，跨模式续训拒绝。
 
-旧 CQL 的 Q 值不是概率 logits，明确拒绝加载；不做部分迁移。BC 的 `model.act(obs, memory)` 返回 argmax Joint ID 和新记忆，`step_logits` 便于推理端显示 softmax 概率；调用者按断帧/暂停/终局清空 memory，并使用 checkpoint 内归一化。`action_space.to_controller` 解码回方向和六个按钮。
+旧 CQL 的 Q 值不是概率 logits，明确拒绝加载；不做部分迁移。BC 的 `model.act(obs, memory)` 返回 argmax Joint ID 和新记忆，`step_logits` 供实战端显示 softmax 概率；`live/runtime.py` 处理暂停、终局与长缺帧时的记忆清空，`live/input_history.py` 在任何非连续帧处将上一帧输入重置为 START。实战使用 checkpoint 内归一化，`action_space.to_controller` 解码回方向和六个按钮。详见 [BC 实战推理说明](live_inference.md)。
+
+TCN 的实战 memory 是 `[batch,最多31,256]` 的历史战斗特征，不是 GRU 的 `[batch,128]` 隐藏状态；任何观测或成功推理帧不连续都会清空窗口。对照参数、冻结语义、独立输出目录及限制详见 [时序实验](temporal_experiments.md)。

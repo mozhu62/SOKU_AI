@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--config")
     parser.add_argument("--resume")
     parser.add_argument("--output", help="相对 soku_bc 的独立模型输出目录")
+    parser.add_argument("--temporal-mode", choices=("gru", "tcn"),
+                        help="新实验时序结构；tcn 自动设置 31 帧前导上下文，跨架构不能 --resume")
     parser.add_argument("--port", type=int, help="本机服务起始端口，冲突自动顺延")
     parser.add_argument("--host", choices=("0.0.0.0", "127.0.0.1"), help="网页监听地址")
     parser.add_argument("--headless", action="store_true", help="无网页，立即开始训练")
@@ -30,6 +32,10 @@ def main():
         source = args.config or "configs/bc_suika.yaml"
     if args.output:
         config["output"]["directory"] = args.output
+    if args.temporal_mode:
+        config["model"]["temporal_mode"] = args.temporal_mode
+        if args.temporal_mode == "tcn":
+            config["training"]["burn_in"] = 31
     if args.port:
         config["web"]["port"] = args.port
     if args.host:
