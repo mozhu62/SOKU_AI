@@ -4,7 +4,13 @@ import {useHistory,type Row} from '../api';
 import {number,percent} from '../lib/utils';
 import {JointFrequency} from '../components/JointActions';
 
-export const moduleLabels:Row={current_encoder:'当前状态（含资源 / 上帧输入）',object_encoder:'弹幕集合编码器',fusion:'特征融合',gru:'GRU 记忆',tcn:'TCN · 连续 32 帧',memory_fusion:'记忆融合',policy_head:'BC 分类头 · 432'};
+export const moduleLabels:Row={
+  current_encoder:'当前状态 · 878D→1024D',
+  object_encoder:'双方对象集合 · 128D+128D',
+  tcn:'历史状态 TCN32 · 878D×32→256D',
+  fusion:'联合融合 · 1536D→1024D',
+  policy_head:'Joint432 分类头',
+};
 
 export function Diagnostics({state}:{state:Row}){
   const {rows,error}=useHistory('train'),last=state.latest_train||{},val=state.latest_validation||{};

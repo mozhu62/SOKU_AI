@@ -11,7 +11,8 @@ from ..config import resolve
 from ..action_space import action_catalog
 from .agent import LiveAgent
 from .control import SafeControl, MenuRestart
-from .resource_state import LiveStateClient
+from .frame_stream import LiveFrameClient
+from .tcn_runtime import run_tcn_loop
 from .statistics import EvaluationStatistics, frame_key, readback
 from .battle_state import battle_error, mode_details
 
@@ -42,6 +43,8 @@ class LiveRuntime:
         self.last_traceback = None
         self.temporal_resets = 0
         self.temporal_reset_reason = None
+        self.frame_queue_connected = False
+        self.frame_queue_received = self.frame_queue_dropped = self.tcn_warmup_waits = 0
 
     def start(self):
         if self.thread is not None:
@@ -85,6 +88,15 @@ class LiveRuntime:
                           network_version=self.agent.model.spec["network_version"],
                           temporal=self.agent.model.spec["temporal"],
                           uses_resources=self.agent.model.uses_resources, action_catalog=action_catalog())
+            window = self.agent.tcn_window
+            status["temporal_capture"] = {
+                "source": "LiveFrames.v1", "connected": self.frame_queue_connected, "capacity": 128,
+                "required_frames": 32, "ready": len(window) == 32, "buffer_frames": len(window),
+                "first_frame": window.rows[0][0][2] if len(window) else None,
+                "last_frame": window.key[2] if window.key else None,
+                "received_slots": self.frame_queue_received, "dropped_slots": self.frame_queue_dropped,
+                "warmup_waits": self.tcn_warmup_waits, "padding_frames": 0,
+            }
         if self.control is not None:
             status["control"] = self.control.snapshot()
         if self.stats is not None:
@@ -103,19 +115,12 @@ class LiveRuntime:
             self.status = status
 
     def _reset_memory(self, reason="暂停、边界或观测失效"):
-        if self.agent.memory is not None:
+        if self.agent.memory is not None or len(getattr(self.agent, "tcn_window", None) or ()):
             self.temporal_resets += 1
             self.temporal_reset_reason = reason
         self.agent.reset()
         self.last_inferred_key = None
         self.pending = None
-
-    def _prepare_temporal_frame(self, key):
-        # 已观察到连续帧，不代表每帧都完成了有效推理；TCN 缓存必须对应连续游戏帧。
-        if self.agent.temporal_mode == "tcn" and self.agent.memory is not None:
-            previous = self.last_inferred_key
-            if previous is None or previous[:2] != key[:2] or key[2] != previous[2] + 1:
-                self._reset_memory("有效推理帧不连续，TCN32 重新积累窗口")
 
     def _handle_commands(self):
         while True:
@@ -131,7 +136,6 @@ class LiveRuntime:
                 pid = int(self.latest.gameProcessId) if self.latest is not None else 0
                 self.control.resume(pid)
                 self.message = self.control.reason
-                self._reset_memory()
             elif command == "pause":
                 self.control.pause("用户暂停；游戏本身不会暂停")
             elif command == "save":
@@ -151,12 +155,12 @@ class LiveRuntime:
         if error:
             self.control.pause(error)
             self.stats.cut(error)
-            self._reset_memory()
+            self._reset_memory(error)
             self.match_finished = False
             self.message = error
             return False
         if old is not None and (payload.gameProcessId != old.gameProcessId or not payload.inBattle):
-            self._reset_memory()
+            self._reset_memory("游戏进程变化或退出战斗")
         if old is not None and payload.gameProcessId != old.gameProcessId:
             self.control.pause("游戏进程已变化，请确认后重新开始")
             self.match_finished = False
@@ -165,13 +169,12 @@ class LiveRuntime:
             gap = int(payload.battleFrame) - int(old.battleFrame)
             if frame_key(payload)[:2] == frame_key(old)[:2] and gap > 1:
                 self.missing_frames += gap - 1
-                if self.agent.temporal_mode == "tcn":
-                    self._reset_memory(f"缺失 {gap - 1} 个游戏帧，TCN32 重新积累连续窗口")
+                self._reset_memory(f"缺失 {gap - 1} 个游戏帧，TCN32 重新积累连续窗口")
                 if gap > self.config["environment"]["max_memory_gap_frames"]:
                     self.stats.mark_partial("长时间缺帧，伤害统计不完整")
-                    self._reset_memory()
+                    self._reset_memory("长时间缺失游戏帧")
             if gap < 0 or payload.currentRound != old.currentRound:
-                self._reset_memory()
+                self._reset_memory("帧号回退或小局变化")
         active = self._active_battle(payload)
         ready = self.control.ready()
         if active and ready:
@@ -207,13 +210,15 @@ class LiveRuntime:
             self.prepared_agent = None
             self.agent.reset()
             self.stats = EvaluationStatistics(self.config, self.agent)
-            client = LiveStateClient(self.agent.model.uses_resources)
+            client = LiveFrameClient()
             restart = MenuRestart(self.config["restart"])
             env = self.config["environment"]
             last_serial, last_frame, last_frame_time = None, None, time.monotonic()
             side = "1P" if env["player_side"] == "left" else "2P"
             self.message = f"模型就绪。进入对战后点击开始，当前控制 {side}，不限制双方角色"
             self._publish("就绪", True)
+            run_tcn_loop(self, client, restart)
+            return
             while not self.closed.wait(env["poll_seconds"]):
                 self.control.touch()
                 self._handle_commands()
@@ -291,7 +296,6 @@ class LiveRuntime:
                     if 0 <= key[2] - self.last_inferred_key[2] < env["decision_interval_frames"]:
                         self._publish()
                         continue
-                self._prepare_temporal_frame(key)
                 prediction, next_memory = self.agent.predict(p, snapshot.resources)
                 # 预测与实际发键分别展示：即使观测过期而没有执行，也保留本次网络输出供排查。
                 prediction.update(execution_status="pending", execution_reason="等待发键前安全检查")

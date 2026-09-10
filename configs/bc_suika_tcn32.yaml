@@ -8,12 +8,12 @@ data:
   vertical_positive_is_down: true
 model:
   temporal_mode: tcn
-  current_hidden_dim: 256
+  current_hidden_dim: 1024
   object_hidden_dim: 64
   object_set_dim: 128
-  fusion_dim: 256
-  gru_hidden_dim: 128
-  head_hidden_dim: 128
+  temporal_hidden_dim: 256
+  temporal_output_dim: 256
+  fusion_dim: 1024
   object_embedding_mode: separate
   skill_embedding_dim: 8
   skill_level_embedding_dim: 4
@@ -39,10 +39,9 @@ training:
   cpu_threads: 4
   amp: true
   prefetch_batches: 2
-  # GRU 在 TCN 模式中自动冻结且旁路，无须在此重复列出。
   frozen_modules: []
 output:
-  directory: outputs/temporal_experiments/tcn32_seed42
+  directory: outputs/bc_suika_wide_tcn32_v2
 web:
   host: 127.0.0.1
   port: 8796

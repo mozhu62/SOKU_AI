@@ -207,24 +207,20 @@ class Runtime:
 
     def _new_experiment(self, values):
         if not self.paused:
-            raise ValueError("请先暂停，等待当前更新结束后创建时序实验")
-        if (set(values) - {"name", "temporal_mode", "freeze_gru", "expected_stage", "expected_output", "confirm"}
+            raise ValueError("请先暂停，等待当前更新结束后创建独立实验")
+        if (set(values) - {"name", "expected_stage", "expected_output", "confirm"}
                 or values.get("confirm") is not True):
-            raise ValueError("创建实验需要明确确认；只支持随机初始化的独立分支")
+            raise ValueError("创建实验需要明确确认；当前只支持固定宽 TCN32 的随机初始化独立分支")
         if values.get("expected_stage") != self.stage or values.get("expected_output") != str(self.output):
             raise ValueError("实验页面已过期，请刷新后重试")
-        mode = values.get("temporal_mode")
-        if mode not in ("gru", "tcn") or type(values.get("freeze_gru", False)) is not bool:
-            raise ValueError("时序模式或 GRU 冻结设置无效")
         if self.snapshot()["locked_parameters"]:
             raise ValueError("创建随机实验会清空冻结设置；请先显式解除参数锁")
         target = experiment_path(values.get("name"))
         if target.exists():
             raise ValueError("实验目录已存在，请填写新名称；不会覆盖现有模型")
         config = copy.deepcopy(self.config)
-        config["model"]["temporal_mode"] = mode
-        # 两组新实验都读取 31 帧前导数据，监督起点、标签和验证抽样保持一致。
-        config["training"].update(burn_in=31, frozen_modules=["gru"] if mode == "gru" and values.get("freeze_gru") else [])
+        config["model"]["temporal_mode"] = "tcn"
+        config["training"].update(burn_in=31, frozen_modules=[])
         config["output"]["directory"] = target.relative_to(resolve(".")).as_posix()
         validate(config)
         self._close_prefetch()
@@ -246,9 +242,14 @@ class Runtime:
             atomic_json(target / "normalization.json", self.store.normalization)
             atomic_json(target / "dataset_summary.json", {**self.store.summary(), **self.action_baselines})
             atomic_json(target / "configs" / "stage_0.json", config)
-            atomic_json(target / "experiment.json", {"initialization": "random", "parent_run": str(self.output),
-                                                     "parent_step": self.step, "temporal_mode": mode,
-                                                     "shared_initialization_seed": config["seed"]})
+            atomic_json(target / "experiment.json", {
+                "initialization": "random",
+                "parent_run": str(self.output),
+                "parent_step": self.step,
+                "network_version": learner.model.spec["network_version"],
+                "temporal_mode": "tcn",
+                "shared_initialization_seed": config["seed"],
+            })
         except Exception as error:
             torch.set_rng_state(cpu_rng)
             if cuda_rng:
@@ -264,11 +265,11 @@ class Runtime:
         self.timings = {key: 0.0 for key in self.timings}
         with self.lock:
             self.history.clear()
-        self.publish(config=config, config_source="工作台随机时序实验", output=str(target),
+        self.publish(config=config, config_source="工作台宽 TCN32 随机实验", output=str(target),
                      step=0, updates=0, samples=0, stage=0, best=None, latest_train=None, latest_validation=None,
                      timings=self.timings, locked_parameters=[], error=None, **self._model_state(),
                      last_saved={"path": str(target / "last.pt"), "step": 0, "time": time.time()},
-                     message=f"{mode.upper()} 随机实验已创建；原模型已保存。点击开始才训练新分支。")
+                     message="宽 TCN32 随机实验已创建；原模型已保存。点击开始才训练新分支。")
         self._write_comparison()
 
     def _handle_commands(self):

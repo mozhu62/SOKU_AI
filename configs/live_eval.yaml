@@ -1,5 +1,5 @@
 # 这是独立的 Windows 实战验证配置，不改变训练配置和模型权重。
-checkpoint: outputs/bc_suika_joint432_v1/last.pt
+checkpoint: outputs/bc_suika_wide_tcn32_v2/last.pt
 device: cpu
 cpu_threads: 2
 output: outputs/evaluations

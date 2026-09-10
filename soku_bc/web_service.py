@@ -131,7 +131,7 @@ def create_app(runtime, port):
         state = runtime.snapshot()
         return {"config": state["config"], "stage": state["stage"], "output": state["output"], "source": state["config_source"],
                 "locks": state["locked_parameters"],
-                "modules": [name for name in MODULES if name != "tcn" or state["config"]["model"].get("temporal_mode") == "tcn"],
+                "modules": list(MODULES),
                 "module_status": state.get("module_status", {}), "temporal": state.get("temporal"),
                 "fields": [{"key": key, "min": value[0], "max": value[1], "type": value[2], "label": value[3]}
                            for key, value in EDITABLE.items()]}

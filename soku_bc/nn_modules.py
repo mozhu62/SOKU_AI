@@ -7,7 +7,7 @@ from torch import nn
 
 from .embeddings import SafeEmbedding
 from .action_space import PREVIOUS_ACTION_VOCAB, START_ACTION_ID
-from .resource_encoder import ResourceEncoder
+from .resource_encoder import ResourceEncoder, resource_output_dim
 
 from .schema import STATE_CONTINUOUS_FEATURES, OBJECT_NUMERICAL_FEATURES
 from .schema import TACTICAL_FEATURES
@@ -19,6 +19,13 @@ def hidden_mlp(input_dim: int, hidden_dim: int, layers: int = 2) -> nn.Sequentia
         modules.extend((nn.Linear(input_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU()))
         input_dim = hidden_dim
     return nn.Sequential(*modules)
+
+
+def current_state_input_dim(cfg: dict) -> int:
+    return (len(STATE_CONTINUOUS_FEATURES) + len(TACTICAL_FEATURES)
+            + 2 * cfg["action_embedding_dim"] + 2 * cfg["block_embedding_dim"]
+            + cfg["weather_embedding_dim"] + resource_output_dim(cfg)
+            + cfg["previous_action_embedding_dim"] + 1 + 4 + 4)
 
 
 def initialize(module: nn.Module) -> None:
@@ -46,22 +53,31 @@ class CurrentStateEncoder(nn.Module):
         self.previous_action = nn.Embedding(PREVIOUS_ACTION_VOCAB, cfg["previous_action_embedding_dim"],
                                             padding_idx=START_ACTION_ID)
         self.resources = ResourceEncoder(cfg)
-        input_dim = (len(STATE_CONTINUOUS_FEATURES) + len(TACTICAL_FEATURES)
-                     + 2 * cfg["action_embedding_dim"] + 2 * cfg["block_embedding_dim"]
-                     + cfg["weather_embedding_dim"] + self.resources.output_dim
-                     + cfg["previous_action_embedding_dim"] + 1 + 4 + 4)
-        self.network = hidden_mlp(input_dim, cfg["current_hidden_dim"])
+        self.input_dim = current_state_input_dim(cfg)
+        # 878D 原始状态只经过一次宽映射，避免先压缩到 256D 再反复变换。
+        self.network = hidden_mlp(self.input_dim, cfg["current_hidden_dim"], layers=1)
 
-    def forward(self, obs) -> torch.Tensor:
+    def features(self, obs) -> torch.Tensor:
         numeric, tactical, categorical = obs["state_continuous"], obs["tactical_state"], obs["state_categorical"]
         # 类别列序沿用 BC 分片清单：己方动作/动作段、敌方动作/动作段、生效天气。
         embedded = torch.cat((self.action(categorical[..., 0]), self.block(categorical[..., 1]),
                               self.action(categorical[..., 2]), self.block(categorical[..., 3]),
                               self.weather(categorical[..., 4])), dim=-1)
-        return self.network(torch.cat((numeric, tactical, embedded, self.resources(obs),
-                                       self.previous_action(obs["previous_joint_action_id"]),
-                                       obs["previous_action_duration"], obs["state_optional_continuous"],
-                                       obs["state_optional_mask"].to(numeric.dtype)), dim=-1))
+        features = torch.cat((numeric, tactical, embedded, self.resources(obs),
+                              self.previous_action(obs["previous_joint_action_id"]),
+                              obs["previous_action_duration"], obs["state_optional_continuous"],
+                              obs["state_optional_mask"].to(numeric.dtype)), dim=-1)
+        if features.shape[-1] != self.input_dim:
+            raise ValueError(f"当前状态拼接维度应为 {self.input_dim}，实际为 {features.shape[-1]}")
+        return features
+
+    def forward_features(self, features: torch.Tensor) -> torch.Tensor:
+        if features.shape[-1] != self.input_dim:
+            raise ValueError(f"当前状态编码器需要 {self.input_dim}D 输入")
+        return self.network(features)
+
+    def forward(self, obs) -> torch.Tensor:
+        return self.forward_features(self.features(obs))
 
 
 class ObjectSetEncoder(nn.Module):
@@ -102,9 +118,5 @@ class ObjectSetEncoder(nn.Module):
 
 class FusionEncoder(nn.Sequential):
     def __init__(self, cfg: dict) -> None:
-        super().__init__(*hidden_mlp(cfg["current_hidden_dim"] + 2 * cfg["object_set_dim"], cfg["fusion_dim"]))
-
-
-class MemoryFusion(nn.Sequential):
-    def __init__(self, cfg: dict) -> None:
-        super().__init__(*hidden_mlp(cfg["fusion_dim"] + cfg["gru_hidden_dim"], cfg["fusion_dim"], layers=1))
+        input_dim = cfg["current_hidden_dim"] + cfg["temporal_output_dim"] + 2 * cfg["object_set_dim"]
+        super().__init__(*hidden_mlp(input_dim, cfg["fusion_dim"], layers=1))

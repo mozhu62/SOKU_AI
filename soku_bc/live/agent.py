@@ -11,6 +11,7 @@ from ..checkpoint import load
 from ..models import BCNetwork
 from ..action_space import ACTION_COUNT, to_controller, decode, action_name
 from .observation import ObservationBuilder
+from .tcn_window import TCNObservationWindow
 
 
 class LiveAgent:
@@ -29,7 +30,7 @@ class LiveAgent:
         self.model.load_state_dict(package["model"], strict=True)
         self.model.to(self.device).eval().requires_grad_(False)
         self.temporal_mode = self.model.temporal_mode
-        if self.temporal_mode == "tcn" and config["environment"]["decision_interval_frames"] != 1:
+        if config["environment"]["decision_interval_frames"] != 1:
             raise ValueError("TCN32 按连续游戏帧训练，实战 decision_interval_frames 必须为 1；不能用 32 次稀疏决策冒充 32 帧")
         # 回读方向使用模型训练时的轴约定；Joint Action 的方向已经是屏幕绝对九宫格。
         self.vertical_positive_is_down = bool(package["config"]["data"]["vertical_positive_is_down"])
@@ -44,18 +45,28 @@ class LiveAgent:
         if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
             raise ValueError("加载过程中模型文件发生变化，请先复制为固定文件再开始评估")
         self.memory = None
+        self.tcn_window = TCNObservationWindow()
 
     def reset(self):
         self.memory = None
         self.builder.reset()
+        self.tcn_window.reset()
+
+    def observe_tcn_frame(self, payload, resources):
+        key = (int(payload.gameProcessId), int(payload.currentRound), int(payload.battleFrame))
+        if key != self.tcn_window.key:
+            self.tcn_window.append(key, self.builder.build(payload, resources))
 
     @torch.inference_mode()
     def predict(self, payload, resources=None):
         started = time.perf_counter()
-        arrays = self.builder.build(payload, resources)
-        obs = {name: torch.from_numpy(value).unsqueeze(0).to(self.device) for name, value in arrays.items()}
-        logits, memory = self.model.step_logits(obs, self.memory)
-        if logits.shape != (1, ACTION_COUNT) or not torch.isfinite(logits).all() or not torch.isfinite(memory).all():
+        key = (int(payload.gameProcessId), int(payload.currentRound), int(payload.battleFrame))
+        if self.tcn_window.key != key:
+            raise ValueError("推理帧不对应 TCN 窗口末帧，禁止使用错位历史")
+        logits, memory = self.tcn_window.logits(self.model, self.device), None
+        previous_id, previous_duration = self.tcn_window.previous_action, self.tcn_window.previous_duration
+        if (logits.shape != (1, ACTION_COUNT) or not torch.isfinite(logits).all()
+                or (memory is not None and not torch.isfinite(memory).all())):
             raise ValueError("BC 输出形状不是 [1,432] 或 logits/时序状态含 NaN/Inf，已停止控制")
         # 转 CPU 同步 CUDA，使耗时覆盖实际计算，而不是只测异步提交。
         joint_logits = logits[0].float().cpu()
@@ -74,11 +85,11 @@ class LiveAgent:
                 "normalized_entropy": float(entropy) / math.log(ACTION_COUNT),
                 "output_semantics": "categorical_logits", "action_selection": self.action_selection,
                 "temporal_mode": self.temporal_mode,
-                "context_frames_used": (min(32, 1 + (0 if self.memory is None else self.memory.shape[1]))
-                                        if self.temporal_mode == "tcn" else None),
+                "context_frames_used": len(self.tcn_window),
+                "context_first_frame": self.tcn_window.rows[0][0][2],
                 "observation_frame": int(payload.battleFrame), "observation_round": int(payload.currentRound),
                 "sample_serial": int(payload.sampleSerial),
-                "previous_joint_action_id": int(arrays["previous_joint_action_id"]),
-                "previous_action_duration": float(arrays["previous_action_duration"][0]),
+                "previous_joint_action_id": previous_id,
+                "previous_action_duration": previous_duration,
                 "inference_ms": (time.perf_counter() - started) * 1000,
                 "resource_inputs": self.builder.resource_summary}, memory

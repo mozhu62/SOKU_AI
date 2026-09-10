@@ -49,10 +49,14 @@ class BCLearningTests(unittest.TestCase):
         model = BCNetwork(copy.deepcopy(DEFAULTS['model'])).eval()
         obs = tensor_observation(batch=2, length=5)
         self.assertEqual(tuple(model.module_groups()), active_modules(DEFAULTS['model']))
-        self.assertEqual((model.gru.input_size, model.gru.hidden_size, model.gru.num_layers), (256, 128, 1))
+        self.assertFalse(hasattr(model, 'gru'))
+        self.assertFalse(hasattr(model, 'memory_fusion'))
         self.assertEqual(model.current_encoder.previous_action.num_embeddings, 433)
-        self.assertEqual(model.current_encoder.network[0].out_features, 256)
-        self.assertEqual(model.policy_head[-1].out_features, 432)
+        self.assertEqual(model.current_encoder.input_dim, 878)
+        self.assertEqual(model.current_encoder.network[0].out_features, 1024)
+        self.assertEqual(model.tcn.output_dim, 256)
+        self.assertEqual((model.fusion[0].in_features, model.fusion[0].out_features), (1536, 1024))
+        self.assertEqual(model.policy_head.out_features, 432)
         with torch.no_grad():
             full = model(obs)
             self.assertEqual(full.shape, (2, 5, 432))
@@ -61,8 +65,6 @@ class BCLearningTests(unittest.TestCase):
                 logits, memory = model.step_logits({key: value[:, index] for key, value in obs.items()}, memory)
                 frames.append(logits)
             self.assertTrue(torch.allclose(full, torch.stack(frames, 1), atol=1e-5))
-            burned = model(obs, 2, torch.tensor([2, 2]))
-            self.assertTrue(torch.allclose(full[:, 2:], burned, atol=1e-5))
             changed = {key: value.clone() for key, value in obs.items()}
             changed['state_continuous'][:, 3:] = 10
             self.assertTrue(torch.allclose(full[:, :3], model(changed)[:, :3], atol=1e-5))

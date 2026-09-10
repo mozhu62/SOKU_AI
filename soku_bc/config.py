@@ -7,18 +7,16 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-NETWORK_VERSION = "soku_bc_recurrent_joint432_v1"
-TCN_NETWORK_VERSION = "soku_bc_tcn32_joint432_v1"
-TEMPORAL_MODES = ("gru", "tcn")
+NETWORK_VERSION = "soku_bc_wide_tcn32_joint432_v2"
 MODEL_DEFAULTS = {
     "action_vocab_size": 2048, "block_vocab_size": 512, "weather_vocab_size": 32,
     "action_embedding_dim": 32, "block_embedding_dim": 8, "weather_embedding_dim": 8,
-    "current_hidden_dim": 256, "object_hidden_dim": 64, "object_set_dim": 128,
-    "fusion_dim": 256, "gru_hidden_dim": 128, "head_hidden_dim": 128,
+    "current_hidden_dim": 1024, "object_hidden_dim": 64, "object_set_dim": 128,
+    "temporal_hidden_dim": 256, "temporal_output_dim": 256, "fusion_dim": 1024,
     "object_embedding_mode": "separate",
     "skill_embedding_dim": 8, "skill_level_embedding_dim": 4, "previous_action_embedding_dim": 32,
     "card_vocab_size": 512, "card_embedding_dim": 16,
-    "temporal_mode": "gru",
+    "temporal_mode": "tcn",
 }
 DEFAULTS = {
     "seed": 42,
@@ -27,27 +25,26 @@ DEFAULTS = {
              "train_fraction": 0.8, "cache_gb": 4.0, "vertical_positive_is_down": True},
     "model": MODEL_DEFAULTS,
     "training": {"device": "auto", "total_steps": 100000, "batch_size": 32,
-                 "sequence_length": 32, "burn_in": 16, "replays_per_batch": 4,
+                 "sequence_length": 32, "burn_in": 31, "replays_per_batch": 4,
                  "learning_rate": 0.0001, "label_smoothing": 0.0, "max_grad_norm": 10.0,
                  "weight_decay": 0.0001, "log_interval": 20, "save_interval": 1000,
                  "validation_interval": 1000, "validation_batches": 20,
                  "cpu_threads": 4, "amp": True, "prefetch_batches": 2, "frozen_modules": []},
-    "output": {"directory": "outputs/bc_suika_joint432_v1"},
+    "output": {"directory": "outputs/bc_suika_wide_tcn32_v2"},
     "web": {"host": "127.0.0.1", "port": 8796, "port_attempts": 30},
 }
-MODULES = ("current_encoder", "object_encoder", "fusion", "gru", "tcn", "memory_fusion", "policy_head")
+MODULES = ("current_encoder", "object_encoder", "tcn", "fusion", "policy_head")
 
 
 def network_version_for(model):
-    mode = model.get("temporal_mode", "gru")
-    if mode not in TEMPORAL_MODES:
-        raise ValueError("model.temporal_mode 只允许 gru 或 tcn")
-    return TCN_NETWORK_VERSION if mode == "tcn" else NETWORK_VERSION
+    if model.get("temporal_mode", "tcn") != "tcn":
+        raise ValueError("当前 BC 网络已删除 GRU，model.temporal_mode 必须为 tcn")
+    return NETWORK_VERSION
 
 
 def active_modules(model):
-    temporal = model.get("temporal_mode", "gru")
-    return tuple(name for name in MODULES if name not in ("gru", "tcn") or name == temporal)
+    network_version_for(model)
+    return MODULES
 # 运行中可调项只在暂停后应用；改变输入、结构和数据划分必须另开训练。
 EDITABLE = {
     "learning_rate": (1e-8, 0.01, "float", "学习率"),
@@ -69,7 +66,10 @@ def resolve(path: str | Path) -> Path:
 
 
 def validate(config: dict) -> dict:
-    # 老 GRU 配置缺少模式字段时显式补为 gru，权重形状和前向语义保持不变。
+    # 结构字段统一补齐后再校验；旧 GRU 配置会因模式或宽度不兼容而被明确拒绝。
+    unknown_model = set(config["model"]) - set(MODEL_DEFAULTS)
+    if unknown_model:
+        raise ValueError(f"model 包含旧架构或未知字段：{sorted(unknown_model)}")
     config["model"] = {**MODEL_DEFAULTS, **config["model"]}
     network_version_for(config["model"])
     if isinstance(config["seed"], bool) or not isinstance(config["seed"], int) or config["seed"] < 0:
@@ -84,7 +84,7 @@ def validate(config: dict) -> dict:
     for key, lo in (("sequence_length", 1), ("burn_in", 0), ("replays_per_batch", 1), ("cpu_threads", 1)):
         if type(cfg[key]) is not int or not lo <= cfg[key] <= 4096:
             raise ValueError(f"training.{key} 超出范围")
-    if config["model"]["temporal_mode"] == "tcn" and cfg["burn_in"] != 31:
+    if cfg["burn_in"] != 31:
         raise ValueError("TCN32 必须设置 training.burn_in=31，表示监督段之前的真实上下文，不是 GRU 预热")
     if type(cfg["amp"]) is not bool or type(cfg["prefetch_batches"]) is not int or not 1 <= cfg["prefetch_batches"] <= 8:
         raise ValueError("amp 必须为布尔值，prefetch_batches 必须在 1 到 8 之间")
@@ -92,8 +92,6 @@ def validate(config: dict) -> dict:
     if (not isinstance(frozen, list) or any(x not in MODULES for x in frozen)
             or set(active_modules(config["model"])) <= set(frozen)):
         raise ValueError("冻结模块无效或全部模块均被冻结")
-    if config["model"]["temporal_mode"] == "gru" and "tcn" in frozen:
-        raise ValueError("GRU 模式没有 TCN 模块，不能设置 TCN 冻结")
     if config["data"]["train_fraction"] != 0.8:
         raise ValueError("本版本固定按整份 REP 进行 8:2 划分")
     cache_gb = config["data"]["cache_gb"]
@@ -109,9 +107,10 @@ def validate(config: dict) -> dict:
         raise ValueError("object_set_dim 必须等于 object_hidden_dim 的两倍")
     if model["object_embedding_mode"] not in ("shared", "separate"):
         raise ValueError("object_embedding_mode 无效")
-    for key in ("current_hidden_dim", "object_hidden_dim", "object_set_dim", "fusion_dim", "gru_hidden_dim", "head_hidden_dim"):
+    for key in ("current_hidden_dim", "object_hidden_dim", "object_set_dim", "temporal_hidden_dim",
+                "temporal_output_dim", "fusion_dim"):
         if model[key] != MODEL_DEFAULTS[key]:
-            raise ValueError(f"本版保持原主干宽度，model.{key} 必须为 {MODEL_DEFAULTS[key]}")
+            raise ValueError(f"当前宽 TCN32 架构固定 model.{key}={MODEL_DEFAULTS[key]}")
     if config["web"]["host"] not in ("0.0.0.0", "127.0.0.1"):
         raise ValueError("web.host 只允许 0.0.0.0 或 127.0.0.1")
     if (type(config["web"]["port"]) is not int or type(config["web"]["port_attempts"]) is not int

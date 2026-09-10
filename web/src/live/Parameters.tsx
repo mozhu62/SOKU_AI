@@ -12,7 +12,6 @@ export function Parameters({state}:{state:Row}){
     keyboard:cfg.keyboard||{},difficulty:cfg.environment?.cpu_difficulty_label,
     decision_interval_frames:cfg.environment?.decision_interval_frames,auto_restart:cfg.restart?.enabled});},[signature]);
   const canApply=state.connected&&!state.workbench_busy&&!state.control?.active&&state.state!=='initializing';
-  const tcn=state.temporal?.mode==='tcn';
   const apply=async()=>{const result=await command('load',{...draft,confirm_discard:true});setMessage(result.message);};
   const game=state.game||{};
   return <><div className="section-intro"><div><h1>参数与记录</h1><p>沿用工作台配置流程：编辑值与运行值分开，暂停后应用并新建会话。</p></div></div>
@@ -20,7 +19,7 @@ export function Parameters({state}:{state:Row}){
       <label className="field">推理设备<input value={draft.device??''} onChange={e=>setDraft({...draft,device:e.target.value})} placeholder="cpu / cuda / cuda:0"/></label>
       <label className="field">CPU 线程数<input type="number" min={1} max={64} value={draft.cpu_threads??2} onChange={e=>setDraft({...draft,cpu_threads:+e.target.value})}/></label>
       <label className="field">完整小局数（0 不限）<input type="number" min={0} max={10000} value={draft.rounds??20} onChange={e=>setDraft({...draft,rounds:+e.target.value})}/></label>
-      <label className="field">决策间隔 / 游戏帧<input type="number" min={1} max={tcn?1:60} disabled={tcn} value={draft.decision_interval_frames??1} onChange={e=>setDraft({...draft,decision_interval_frames:+e.target.value})}/>{tcn&&<small>TCN32 固定每游戏帧决策；缺帧会清空窗口，不拼接稀疏历史。</small>}</label>
+      <label className="field">决策间隔 / 游戏帧<input type="number" min={1} max={1} disabled value={draft.decision_interval_frames??1} onChange={e=>setDraft({...draft,decision_interval_frames:+e.target.value})}/><small>固定为 1；从 DLL 队列补收真实帧，满 32 帧才推理。实际推理频率受性能限制。</small></label>
       <label className="field">游戏内 CPU 难度<input value={draft.difficulty??''} onChange={e=>setDraft({...draft,difficulty:e.target.value})}/></label>
       <label className="field">整场结束自动续局<select value={draft.auto_restart?'on':'off'} onChange={e=>setDraft({...draft,auto_restart:e.target.value==='on'})}><option value="on">连续按菜单确认键</option><option value="off">关闭，手动续局</option></select></label>
     </div></Card>
@@ -34,7 +33,7 @@ export function Parameters({state}:{state:Row}){
       {name:'inBattle / matchState',value:`${String(game.in_battle??'未记录')} / ${game.match_state??'未记录'}`},
       {name:'进程 ID / 游戏帧',value:`${game.pid??'未记录'} / ${game.frame??'未记录'}`},
       {name:'网络版本',value:state.network_version||'尚未加载'},
-      {name:'时序结构',value:state.temporal?.mode==='tcn'?'TCN32，GRU 已旁路':state.temporal?.mode==='gru'?'GRU，128 维循环状态':'尚未加载'},
+      {name:'时序结构',value:state.temporal?.mode==='tcn'?'宽 TCN32：878D×32 → 256D':'尚未加载'},
       {name:'技能/卡牌输入',value:state.uses_resources===true?'资源版，同帧配对':state.uses_resources===false?'旧模型，不使用':'尚未加载'},
       {name:'评估报告目录',value:state.summary?.report_directory||'尚未创建'},
     ]} columns={[{key:'name',title:'字段'},{key:'value',title:'运行值'}]}/></Card>

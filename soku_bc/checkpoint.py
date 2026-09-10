@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from .config import NETWORK_VERSION, TCN_NETWORK_VERSION, MODEL_DEFAULTS, network_version_for
+from .config import NETWORK_VERSION, MODEL_DEFAULTS, network_version_for
 from .models import network_spec
 from .action_space import ACTION_SCHEMA
 from .schema import policy_input_manifest
@@ -19,9 +19,12 @@ def load(path: Path):
     if not isinstance(package, dict) or package.get("algorithm") != "bc":
         raise ValueError("仅接受 BC checkpoint；CQL/PPO/IQL 权重不能作为 BC 续训模型，请从随机初始化开始")
     version = package.get("network_version")
-    if version not in (NETWORK_VERSION, TCN_NETWORK_VERSION):
-        raise ValueError("BC checkpoint schema 不兼容：网络、输入或分类输出语义不同。"
-                         "joint432 不允许部分加载；请去掉 --resume，从随机初始化开始并使用新输出目录")
+    if version != NETWORK_VERSION:
+        raise ValueError(
+            "BC checkpoint schema 不兼容：当前版本已将 878D 状态改为 1024D 宽编码，"
+            "删除 GRU，并改用独立 32 帧状态 TCN；旧权重不允许部分加载。"
+            "请去掉 --resume，从随机初始化开始并使用新输出目录"
+        )
     if package.get("spec", {}).get("network_version") != version:
         raise ValueError("checkpoint 顶层网络版本与 spec 不一致")
     if (package["spec"].get("action_schema") != ACTION_SCHEMA or
@@ -33,15 +36,14 @@ def load(path: Path):
                 "updates", "samples", "best", "stage", "rng_cpu", "rng_cuda"}
     if required - package.keys():
         raise ValueError(f"BC checkpoint 缺少字段：{sorted(required - package.keys())}")
-    # 只给旧 GRU 补充等价的模式元数据；不增删任何权重、不部分加载、也不迁移到 TCN。
     model = {**MODEL_DEFAULTS, **package["spec"]["model"]}
     if version != network_version_for(model):
-        raise ValueError("checkpoint 的 GRU/TCN 模式与网络版本不一致")
+        raise ValueError("checkpoint 的时序结构与网络版本不一致")
     canonical = network_spec(model)
     if "temporal" in package["spec"] and package["spec"]["temporal"] != canonical["temporal"]:
         raise ValueError("checkpoint 时序窗口或记忆语义不兼容")
-    if version == TCN_NETWORK_VERSION and "temporal" not in package["spec"]:
-        raise ValueError("TCN checkpoint 缺少明确的 32 帧时序协议")
+    if "temporal" not in package["spec"]:
+        raise ValueError("checkpoint 缺少明确的 32 帧时序协议")
     config_model = {**MODEL_DEFAULTS, **package["config"]["model"]}
     if config_model != model:
         raise ValueError("checkpoint 配置与模型结构清单不一致")

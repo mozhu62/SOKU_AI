@@ -12,7 +12,7 @@ from .windows_api import parse_virtual_key
 
 
 DEFAULTS = {
-    "checkpoint": "outputs/bc_suika_joint432_v1/last.pt",
+    "checkpoint": "outputs/bc_suika_wide_tcn32_v2/last.pt",
     "device": "cpu", "cpu_threads": 2,
     "output": "outputs/evaluations", "rounds": 20,
     "environment": {
@@ -69,8 +69,8 @@ def validate(config):
         raise ValueError("rounds 应为 0～10000（0 为不限局数），cpu_threads 应为 1～64")
     if env["player_side"] not in ("left", "right"):
         raise ValueError("player_side 必须是 left（1P）或 right（2P）")
-    if not integer(env["decision_interval_frames"], 1, 60):
-        raise ValueError("决策间隔必须是 1～60 帧")
+    if env["decision_interval_frames"] != 1:
+        raise ValueError("宽 TCN32 实战要求 decision_interval_frames=1，以便逐帧维护真实 32 帧窗口")
     for key in ("max_inference_lag_frames", "max_memory_gap_frames"):
         if not integer(env[key], 1, 120):
             raise ValueError(f"{key} 必须是 1～120 帧")

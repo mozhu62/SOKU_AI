@@ -10,7 +10,7 @@ import {Parameters} from './views/Parameters';
 import {Experiments} from './views/Experiments';
 import {number} from './lib/utils';
 
-const tabs=[['overview','训练总览',ChartNoAxesCombined],['diagnostics','学习诊断',Activity],['experiments','时序实验',FlaskConical],['dataset','数据与覆盖',Database],['parameters','参数与模型',SlidersHorizontal]] as const;
+const tabs=[['overview','训练总览',ChartNoAxesCombined],['diagnostics','学习诊断',Activity],['experiments','独立实验',FlaskConical],['dataset','数据与覆盖',Database],['parameters','参数与模型',SlidersHorizontal]] as const;
 const labels:Record<string,string>={initializing:'准备离线数据',paused:'已暂停',training:'离线训练',validating:'固定集验证',stopped:'已停止',error:'运行异常'};
 
 export default function App(){
@@ -25,7 +25,7 @@ export default function App(){
       <Button variant="secondary" disabled={!connected||terminal||busy||state.state==='initializing'} onClick={()=>void act('save')}><Save size={15}/>保存版本</Button>
       <Button variant="secondary" disabled={!connected||busy||state.state!=='paused'} onClick={()=>void act('validate')}><CheckCheck size={15}/>验证</Button>
       <ConfirmButton disabled={!connected||terminal} title="停止并保存 BC 模型" description="等待当前更新结束，保存 last.pt。正式训练数据不会修改。" onConfirm={()=>command('stop')}><Square size={15}/>停止</ConfirmButton>
-    </div></header><div className="connection-strip"><span>{connected?'已连接':'连接中断，正在重连；网页断开不会停止训练'}</span><span>{state.config?.model?.temporal_mode==='tcn'?'TCN32 · GRU 已旁路':'GRU · 循环记忆'} · 离线 BC</span></div>
+    </div></header><div className="connection-strip"><span>{connected?'已连接':'连接中断，正在重连；网页断开不会停止训练'}</span><span>878D→1024D 当前状态 · TCN32→256D · Joint432 离线 BC</span></div>
     {(message||state.error)&&<div className="feedback" role="status">{state.error||message}<button aria-label="关闭提示" onClick={()=>setMessage('')}>×</button></div>}
     <div className="runtime-message">{state.message||'等待运行状态'}</div>
     <main key={state.output}>{tab==='overview'?<Overview state={state}/>:tab==='diagnostics'?<Diagnostics state={state}/>:tab==='experiments'?<Experiments state={{...state,connected}}/>:tab==='dataset'?<Dataset state={state}/>:<Parameters state={state}/>}</main>

@@ -7,6 +7,12 @@ from .embeddings import SafeEmbedding
 from .schema import CARD_NUMERICAL_FEATURES, MAX_HAND_CARDS
 
 
+def resource_output_dim(cfg):
+    per_side = (4 * (cfg["skill_embedding_dim"] + 2 * cfg["skill_level_embedding_dim"] + 1)
+                + MAX_HAND_CARDS * (cfg["card_embedding_dim"] + 2) + len(CARD_NUMERICAL_FEATURES))
+    return 2 * per_side
+
+
 class SkillSlotEmbedding(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -28,9 +34,7 @@ class ResourceEncoder(nn.Module):
         self.skill_slots = nn.ModuleDict({f"skill_slot_{i}": SkillSlotEmbedding(cfg) for i in range(1, 5)})
         # 所有卡槽和双方共用一张 Card ID 表；槽位次序通过 concat 完整保留。
         self.card = SafeEmbedding(cfg["card_vocab_size"], cfg["card_embedding_dim"])
-        per_side = (4 * (cfg["skill_embedding_dim"] + 2 * cfg["skill_level_embedding_dim"] + 1)
-                    + MAX_HAND_CARDS * (cfg["card_embedding_dim"] + 2) + len(CARD_NUMERICAL_FEATURES))
-        self.output_dim = 2 * per_side
+        self.output_dim = resource_output_dim(cfg)
 
     def forward(self, obs):
         features = []

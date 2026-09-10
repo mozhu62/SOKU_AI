@@ -8,7 +8,7 @@ from .config import ROOT, active_modules
 
 
 EXPERIMENT_ROOT = ROOT / "outputs" / "temporal_experiments"
-COMPARISON_VERSION = "bc_temporal_comparison_v1"
+COMPARISON_VERSION = "bc_wide_tcn32_comparison_v2"
 
 
 def experiment_path(name):
@@ -27,7 +27,7 @@ def comparison_conditions(config, split_hash, normalization):
             "device", "cpu_threads", "prefetch_batches")
     conditions = {"split_hash": split_hash, "seed": config["seed"],
                   "training": {key: training[key] for key in keys},
-                  "model": {key: value for key, value in config["model"].items() if key != "temporal_mode"},
+                  "model": dict(config["model"]),
                   "frozen_active_modules": sorted(set(training["frozen_modules"]) & set(active_modules(config["model"]))),
                   "normalization_hash": hashlib.sha256(json.dumps(normalization, sort_keys=True).encode()).hexdigest()}
     conditions["cache_gb"] = config["data"]["cache_gb"]
@@ -51,7 +51,7 @@ def comparison_catalog(current):
                 row = json.loads(path.read_text(encoding="utf-8"))
                 if (isinstance(row, dict) and row.get("version") == COMPARISON_VERSION
                         and isinstance(row.get("output"), str) and isinstance(row.get("name"), str)
-                        and row.get("temporal_mode") in ("gru", "tcn") and isinstance(row.get("validation"), list)):
+                        and row.get("temporal_mode") == "tcn" and isinstance(row.get("validation"), list)):
                     rows.append(row)
             except (OSError, ValueError):
                 continue

@@ -31,7 +31,7 @@ def isolated_runtime():
         runtime.step, runtime.updates, runtime.samples = 7, 7, 100
         runtime.publish(state='paused')
         target = root / 'branches' / 'candidate'
-        values = {'name': 'candidate', 'temporal_mode': 'tcn', 'confirm': True,
+        values = {'name': 'candidate', 'confirm': True,
                   'expected_stage': 0, 'expected_output': str(runtime.output)}
         try:
             with patch('soku_bc.runtime.experiment_path', return_value=target), \
@@ -96,32 +96,25 @@ class TemporalRuntimeTests(unittest.TestCase):
 
     def test_experiment_command_is_idempotent(self):
         runtime = Runtime(copy.deepcopy(DEFAULTS))
-        value = {'name': 'candidate', 'temporal_mode': 'tcn', 'confirm': True}
+        value = {'name': 'candidate', 'confirm': True}
         runtime.submit('experiment_request_01', 'experiment', value)
         runtime.submit('experiment_request_01', 'experiment', value)
         self.assertEqual(runtime.commands.qsize(), 1)
         with self.assertRaises(ValueError):
             runtime.submit('experiment_request_01', 'experiment', {**value, 'name': 'other'})
 
-    def test_live_tcn_rejects_sparse_or_cross_round_history(self):
+    def test_live_resume_keeps_tcn_observations(self):
         runtime = LiveRuntime({})
-        runtime.agent = SimpleNamespace(temporal_mode='tcn', memory=object())
+        runtime.agent = SimpleNamespace(temporal_mode='tcn', memory=None, tcn_window=[1, 2, 3])
         runtime.agent.reset = Mock(side_effect=lambda: setattr(runtime.agent, 'memory', None))
-        runtime.last_inferred_key = (1, 1, 10)
-        runtime._prepare_temporal_frame((1, 1, 11))
+        runtime.control = SimpleNamespace(resume=Mock(), reason='已请求继续')
+        runtime.stats = SimpleNamespace(target=0, completed=0)
+        runtime.latest = SimpleNamespace(gameProcessId=1)
+        request = runtime.command('resume')
+        runtime._handle_commands()
+        self.assertTrue(request.done())
         runtime.agent.reset.assert_not_called()
-        runtime._prepare_temporal_frame((1, 1, 12))
-        runtime.agent.reset.assert_called_once()
-        self.assertEqual(runtime.temporal_resets, 1)
-        self.assertIsNone(runtime.last_inferred_key)
-        runtime.agent.memory = object()
-        runtime.last_inferred_key = (1, 1, 10)
-        runtime._prepare_temporal_frame((1, 2, 11))
-        self.assertEqual(runtime.temporal_resets, 2)
-        runtime.agent.temporal_mode = 'gru'
-        runtime.agent.memory = object()
-        runtime._prepare_temporal_frame((2, 3, 100))
-        self.assertEqual(runtime.temporal_resets, 2)
+        self.assertEqual(runtime.agent.tcn_window, [1, 2, 3])
 
 
 if __name__ == '__main__':

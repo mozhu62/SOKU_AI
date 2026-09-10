@@ -1,6 +1,6 @@
 # 上一帧复制基线与动作切换诊断
 
-本次只增加统计、日志及界面。CrossEntropy、网络/GRU/Joint432、采样、镜像处理、固定划分、normalization、action_shift 和按验证 NLL 选 best 的规则不变；checkpoint schema 和权重形状不变，现有 BC 模型可直接续训。
+这两个指标只增加统计、日志及界面，不参与 CrossEntropy 或 best 选优。当前项目后来已切换到宽 TCN32 网络，因此旧 checkpoint 的兼容性应以 architecture.md 为准；指标定义本身未改变。
 
 ## 定义及实现位置
 
