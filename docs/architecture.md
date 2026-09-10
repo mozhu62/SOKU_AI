@@ -111,11 +111,16 @@ TCN32 历史            256D
 - CE 只统计 Dataset mask 标记的有效监督位置。
 - horizontal mirror augmentation、固定 8:2 split、normalization、Joint432 标签和 best checkpoint 规则保持不变。
 
-训练目标仍为：
+每帧仍计算 CrossEntropy，归约改为关键帧加权平均：
 
 ~~~text
-CrossEntropy(logits[t], expert_joint_action_id[t])
+CE[t] = CrossEntropy(logits[t], expert_joint_action_id[t])
+w[t] = changepoint_weight（有真实连续历史且动作发生变化）；其他帧为 1
+loss = sum(CE[t] * w[t] * valid[t]) / sum(w[t] * valid[t])
 ~~~
+
+keyframe_weighting.enabled=false 或 changepoint_weight=1 时恢复等权 BC。
+默认训练 YAML 开启权重 4；旧配置缺少该段时保持关闭。验证的总体 NLL/Top-1/Top-5、等权 CE 和 best 选优口径不变，详见 [关键帧说明](keyframe_weighting.md)。
 
 不存在奖励、TD、N-step、Q value、目标网络、PPO、GAE 或额外辅助损失。
 

@@ -1,6 +1,6 @@
 # SOKU BC：离线行为克隆
 
-该项目从随机初始化开始，使用固定 REP 数据监督学习专家每一帧的完整 Controller State。输出空间为 Joint432；损失仅为 CrossEntropy，不包含 Q、TD、奖励、目标网络、PPO 或宏动作。
+该项目从随机初始化开始，使用固定 REP 数据监督学习专家每一帧的完整 Controller State。输出空间为 Joint432；训练使用可配置的关键帧加权 CrossEntropy，验证总体 NLL/Top-1/Top-5 仍按有效帧等权统计。不包含 Q、TD、奖励、目标网络、PPO 或宏动作。
 
 ## 网络结构
 
@@ -19,7 +19,7 @@
 
 GRU 与旧 Memory Fusion 已删除。TCN 直接读取每帧 878D 状态，不再读取压缩后的 Battle Feature。四个残差块使用 dilation 1/2/4/8，每块含两层 kernel=2 因果卷积；输入 stem 使逐帧感受野严格覆盖当前帧及前 31 帧。
 
-详细定义见 [网络与训练口径](docs/architecture.md)。
+详细定义见 [网络与训练口径](docs/architecture.md) 和 [关键帧加权损失](docs/keyframe_weighting.md)。
 
 ## 安装与启动
 
@@ -51,7 +51,7 @@ python scripts/train.py --resume outputs/bc_suika_wide_tcn32_v2/last.pt
 - 数据目录及固定 8:2 划分由 configs/bc_suika.yaml 指定。
 - 数据集、模型、日志和前端构建产物均由 .gitignore 排除。
 - last.pt 用于续训；best.pt 和 best_stage_N.pt 仍按当前阶段最低 Validation NLL 选择。
-- 432 类动作、normalization、horizontal mirror augmentation、action shift 和 BC CrossEntropy 口径不变。
+- 432 类动作、normalization、horizontal mirror augmentation、action shift 不变；训练 CE 使用关键帧加权，验证总体指标保持等权。
 - 默认输出目录为 outputs/bc_suika_wide_tcn32_v2/。
 
 ## SSH 访问工作台

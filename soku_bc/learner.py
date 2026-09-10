@@ -8,9 +8,13 @@ import torch
 from torch.nn import functional as F
 
 from .models import BCNetwork
-from .config import active_modules
+from .config import active_modules, keyframe_weighting_settings
 from .action_space import ACTION_COUNT, NEUTRAL_ACTION_ID, frequency_rows
-from .action_diagnostics import BATCH_COUNT_KEYS, BATCH_RATE_KEYS, batch_history_rates
+from .action_diagnostics import (
+    BATCH_COUNT_KEYS, BATCH_RATE_KEYS, KEYFRAME_SUM_KEYS, KEYFRAME_RATE_KEYS,
+    batch_history_rates, keyframe_rates,
+)
+from .keyframes import build_changepoint_mask
 
 
 def device_for(name):
@@ -40,7 +44,8 @@ def tensor_batch(batch, device):
             for key, value in batch.items()}
 
 
-def classification_parts(logits, labels, mask, label_smoothing=0.0):
+def classification_parts(logits, labels, mask, label_smoothing=0.0, *,
+                         previous_joint_action_id=None, keyframe_weighting=None):
     if logits.shape[:-1] != labels.shape or mask.shape != labels.shape or logits.shape[-1] != ACTION_COUNT:
         raise ValueError("BC logits、标签与有效 mask 形状不一致")
     if mask.dtype != torch.bool or labels.dtype != torch.long:
@@ -50,8 +55,24 @@ def classification_parts(logits, labels, mask, label_smoothing=0.0):
     valid_logits, valid_labels = logits.float()[mask], labels[mask]
     if not len(valid_labels):
         raise ValueError("BC 批次没有有效动作标签")
-    loss = F.cross_entropy(valid_logits, valid_labels, label_smoothing=label_smoothing)
-    return loss, {"logits": valid_logits, "labels": valid_labels}
+    settings = keyframe_weighting_settings(keyframe_weighting)
+    weights = torch.ones_like(labels, dtype=torch.float32)
+    parts = {"logits": valid_logits, "labels": valid_labels}
+    if previous_joint_action_id is not None:
+        changed, eligible = build_changepoint_mask(labels, mask, previous_joint_action_id)
+        if settings["enabled"]:
+            weights = weights.masked_fill(changed, settings["changepoint_weight"])
+        parts.update(is_changepoint=changed, changepoint_valid_mask=eligible, valid_mask=mask,
+                     previous_joint_action_id=previous_joint_action_id)
+    elif settings["enabled"] and settings["changepoint_weight"] != 1:
+        raise ValueError("关键帧加权缺少 Dataset 对齐的真实上一帧专家动作")
+    # 先筛掉非法 padding 标签/NaN，再散射回 [B,L]，保证所有归约张量完全同形状。
+    valid_ce = F.cross_entropy(valid_logits, valid_labels, reduction="none", label_smoothing=label_smoothing)
+    per_frame_ce = torch.zeros_like(weights).masked_scatter(mask, valid_ce)
+    effective_weights = weights * mask
+    loss = (per_frame_ce * effective_weights).sum() / effective_weights.sum()
+    parts.update(per_frame_ce=per_frame_ce, weights=weights)
+    return loss, parts
 
 
 @torch.no_grad()
@@ -83,29 +104,44 @@ def classification_metrics(parts, previous_joint_action_id=None):
                   joint_correct=torch.bincount(labels[correct], minlength=ACTION_COUNT).cpu().tolist())
     result["joint_data_top"] = frequency_rows(result["joint_data"])
     result["joint_pred_top"] = frequency_rows(result["joint_pred"])
-    if previous_joint_action_id is not None:
-        previous = previous_joint_action_id.detach()
+    if "is_changepoint" in parts or previous_joint_action_id is not None:
+        if "is_changepoint" in parts:
+            valid = parts["valid_mask"]
+            previous = parts["previous_joint_action_id"][valid].detach()
+            changed = parts["is_changepoint"][valid]
+            eligible = parts["changepoint_valid_mask"][valid]
+        else:
+            previous = previous_joint_action_id.detach()
+            changed, eligible = build_changepoint_mask(labels, torch.ones_like(labels, dtype=torch.bool), previous)
         if previous.shape != labels.shape:
             raise ValueError("动作历史诊断没有与有效标签逐帧对齐")
-        eligible = (previous >= 0) & (previous < ACTION_COUNT)
-        same = previous == labels
-        changed = eligible & ~same
-        counts = torch.stack((eligible.sum(), (eligible & same).sum(), changed.sum(),
+        hold = eligible & ~changed
+        counts = torch.stack((eligible.sum(), hold.sum(), changed.sum(),
                               (changed & correct).sum(), (changed & top5_correct).sum(),
                               (eligible & correct).sum())).cpu().tolist()
         result.update(dict(zip(BATCH_COUNT_KEYS, counts)))
         result.update(batch_history_rates(result, len(labels)))
+        # 分组 NLL 仍是未平滑、等权的专家负对数概率，不乘训练关键帧权重。
+        result.update(hold_correct=int((hold & correct).sum()),
+                      hold_nll_sum=float((-expert_log_prob[hold]).sum()),
+                      changepoint_nll_sum=float((-expert_log_prob[changed]).sum()),
+                      model_copy_count=int((eligible & (prediction == previous)).sum()))
+        result.update(keyframe_rates(result))
     return result
 
 
-def diagnostic_previous_actions(batch, burn_in):
-    # 从同一批 observation 取真实历史：跳过 burn-in，应用与 CE 完全相同的 mask。
+def supervised_previous_actions(batch, burn_in):
+    # 跳过 burn-in 后保留 [B,L]，由损失和诊断统一应用正式监督 mask。
     # 若批次已镜像，这里读取的当前标签和历史动作自然使用同一增强坐标系。
     mask = batch["mask"]
     previous = batch["observation"]["previous_joint_action_id"][:, burn_in:burn_in + mask.shape[1]]
     if previous.shape != mask.shape:
         raise ValueError("动作历史长度与监督片段不一致")
-    return previous[mask]
+    return previous
+
+
+def diagnostic_previous_actions(batch, burn_in):
+    return supervised_previous_actions(batch, burn_in)[batch["mask"]]
 
 
 def aggregate_metrics(rows):
@@ -115,7 +151,8 @@ def aggregate_metrics(rows):
         raise ValueError("验证没有有效样本")
     result = {}
     for key in rows[0]:
-        if key in ("samples", "joint_data_top", "joint_pred_top", *BATCH_COUNT_KEYS, *BATCH_RATE_KEYS):
+        if key in ("samples", "joint_data_top", "joint_pred_top", *BATCH_COUNT_KEYS, *BATCH_RATE_KEYS,
+                   *KEYFRAME_SUM_KEYS, *KEYFRAME_RATE_KEYS):
             continue
         if key in ("joint_data", "joint_pred", "joint_correct"):
             result[key] = np.sum([row[key] for row in rows], axis=0, dtype=np.int64).tolist()
@@ -134,6 +171,9 @@ def aggregate_metrics(rows):
     if all(all(key in row for key in BATCH_COUNT_KEYS) for row in rows):
         result.update({key: sum(row[key] for row in rows) for key in BATCH_COUNT_KEYS})
         result.update(batch_history_rates(result, count))
+        if all(all(key in row for key in KEYFRAME_SUM_KEYS) for row in rows):
+            result.update({key: sum(row[key] for row in rows) for key in KEYFRAME_SUM_KEYS})
+            result.update(keyframe_rates(result))
     return result
 
 
@@ -172,7 +212,9 @@ class Learner:
         with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.amp):
             logits = self.model(batch["observation"], cfg["burn_in"], batch["burn_lengths"])
         # CE 在 float32 中执行；网络输出原始 logits，不预先做 softmax。
-        return classification_parts(logits, batch["joint_action_id"], batch["mask"], cfg["label_smoothing"])
+        return classification_parts(logits, batch["joint_action_id"], batch["mask"], cfg["label_smoothing"],
+                                    previous_joint_action_id=supervised_previous_actions(batch, cfg["burn_in"]),
+                                    keyframe_weighting=self.config.get("keyframe_weighting"))
 
     def train_batch(self, raw_batch, diagnostics=False):
         self.model.train()
@@ -208,6 +250,9 @@ class Learner:
             result["module_changes"] = {name: float(torch.stack([(p.detach() - old).float().square().sum()
                                                                  for p, old in zip(module.parameters(), before[name])]).sum().sqrt())
                                         for name, module in self.model.module_groups().items()}
+            settings = keyframe_weighting_settings(self.config.get("keyframe_weighting"))
+            result.update(keyframe_weighting_enabled=settings["enabled"],
+                          changepoint_weight=settings["changepoint_weight"] if settings["enabled"] else 1.0)
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         result["optimization_seconds"] = time.perf_counter() - started
@@ -221,4 +266,5 @@ class Learner:
         if not torch.isfinite(loss):
             raise FloatingPointError("验证损失出现 NaN/Inf")
         return {**classification_metrics(parts, diagnostic_previous_actions(batch, self.config["training"]["burn_in"])),
-                "loss": float(loss)}
+                # 验证 loss 继续是等权 CE；NLL/Top1/Top5 和 checkpoint 选优不受训练权重影响。
+                "loss": float(parts["per_frame_ce"][batch["mask"]].mean())}

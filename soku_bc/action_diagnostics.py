@@ -11,6 +11,9 @@ BATCH_COUNT_KEYS = ("previous_action_samples", "previous_action_copy_correct", "
                     "action_change_correct", "action_change_top5_correct", "history_joint_correct")
 BATCH_RATE_KEYS = ("previous_action_baseline", "action_change_accuracy", "action_change_top5_accuracy",
                    "action_change_fraction", "history_joint_accuracy")
+KEYFRAME_SUM_KEYS = ("hold_correct", "hold_nll_sum", "changepoint_nll_sum", "model_copy_count")
+KEYFRAME_RATE_KEYS = ("hold_top1", "changepoint_top1", "changepoint_top5", "hold_nll", "changepoint_nll",
+                      "expert_changepoint_rate", "previous_action_baseline_accuracy", "model_copy_rate")
 
 
 def ratio(numerator, denominator):
@@ -52,4 +55,20 @@ def prefixed_history_metrics(metrics, prefix):
         return {}
     return {**{f"{prefix}_{key}": metrics[key] for key in (*BATCH_COUNT_KEYS, *BATCH_RATE_KEYS)
                if key != "previous_action_baseline"},
-            f"{prefix}_batch_previous_action_baseline": metrics["previous_action_baseline"]}
+            f"{prefix}_batch_previous_action_baseline": metrics["previous_action_baseline"],
+            **{f"{prefix}_{key}": metrics[key] for key in (*KEYFRAME_SUM_KEYS, *KEYFRAME_RATE_KEYS) if key in metrics}}
+
+
+def keyframe_rates(counts):
+    """按各组真实分母计算；验证跨批先合并计数/NLL 总和，空组返回 None。"""
+    eligible = counts["previous_action_samples"]
+    hold = counts["previous_action_copy_correct"]
+    change = counts["action_change_samples"]
+    return {"hold_top1": ratio(counts["hold_correct"], hold),
+            "changepoint_top1": ratio(counts["action_change_correct"], change),
+            "changepoint_top5": ratio(counts["action_change_top5_correct"], change),
+            "hold_nll": ratio(counts["hold_nll_sum"], hold),
+            "changepoint_nll": ratio(counts["changepoint_nll_sum"], change),
+            "expert_changepoint_rate": ratio(change, eligible),
+            "previous_action_baseline_accuracy": ratio(hold, eligible),
+            "model_copy_rate": ratio(counts["model_copy_count"], eligible)}

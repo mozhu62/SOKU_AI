@@ -19,7 +19,7 @@ export function Diagnostics({state}:{state:Row}){
   return <><div className="section-intro"><div><h1>模仿学习诊断</h1><p>概率来自记录步更新前的同批状态；梯度和参数变化来自该次更新。</p></div><span>Step {number(last.step,0)}</span></div>
     {error&&<p className="error">{error}</p>}
     <div className="stats-grid">
-      <Stat title="训练优化 CE / 未平滑 NLL" value={`${number(last.loss,5)} / ${number(last.nll,5)}`} note={`标签平滑 ${state.config?.training?.label_smoothing??'—'}；0 时两者相同`}/>
+      <Stat title="训练优化 CE / 等权未平滑 NLL" value={`${number(last.loss,5)} / ${number(last.nll,5)}`} note={`标签平滑 ${state.config?.training?.label_smoothing??'—'}；关键帧权重 ${state.config?.keyframe_weighting?.enabled?state.config.keyframe_weighting.changepoint_weight:1}。仅无平滑且权重为 1 时两者相同`}/>
       <Stat title="完整动作 Top-1 / Top-5" value={`${percent(last.joint_accuracy)} / ${percent(last.joint_top5)}`} note={`${number(last.samples,0)} 个有效帧`}/>
       <Stat title="专家动作平均概率" value={percent(last.expert_probability)} note="同批每帧真实标签的 softmax 概率平均值"/>
       <Stat title="归一化熵" value={number(last.normalized_entropy,4)} note={`0 集中 / 1 均匀；原始熵 ${number(last.entropy,4)}`}/>

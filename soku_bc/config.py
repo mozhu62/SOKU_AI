@@ -18,12 +18,14 @@ MODEL_DEFAULTS = {
     "card_vocab_size": 512, "card_embedding_dim": 16,
     "temporal_mode": "tcn",
 }
+KEYFRAME_DEFAULTS = {"enabled": False, "changepoint_weight": 4.0}
 DEFAULTS = {
     "seed": 42,
     "data": {"directory": "../soku_cql/data/replay_shards_resources_v4",
              "split_file": "data/train_val_split_resources_v4.json",
              "train_fraction": 0.8, "cache_gb": 4.0, "vertical_positive_is_down": True},
     "model": MODEL_DEFAULTS,
+    "keyframe_weighting": KEYFRAME_DEFAULTS,
     "training": {"device": "auto", "total_steps": 100000, "batch_size": 32,
                  "sequence_length": 32, "burn_in": 31, "replays_per_batch": 4,
                  "learning_rate": 0.0001, "label_smoothing": 0.0, "max_grad_norm": 10.0,
@@ -65,7 +67,23 @@ def resolve(path: str | Path) -> Path:
     return candidate.resolve() if candidate.is_absolute() else (ROOT / candidate).resolve()
 
 
+def keyframe_weighting_settings(settings=None):
+    # 旧配置缺少此段时保持等权 BC；显式配置后再启用关键帧加权。
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict) or set(settings) - set(KEYFRAME_DEFAULTS):
+        raise ValueError("keyframe_weighting 只接受 enabled 和 changepoint_weight")
+    result = {**KEYFRAME_DEFAULTS, **settings}
+    if type(result["enabled"]) is not bool:
+        raise ValueError("keyframe_weighting.enabled 必须为布尔值")
+    weight = result["changepoint_weight"]
+    if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight) or weight < 1:
+        raise ValueError("keyframe_weighting.changepoint_weight 必须为大于等于 1 的有限数值")
+    return result
+
+
 def validate(config: dict) -> dict:
+    config["keyframe_weighting"] = keyframe_weighting_settings(config.get("keyframe_weighting"))
     # 结构字段统一补齐后再校验；旧 GRU 配置会因模式或宽度不兼容而被明确拒绝。
     unknown_model = set(config["model"]) - set(MODEL_DEFAULTS)
     if unknown_model:
