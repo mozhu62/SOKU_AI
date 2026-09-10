@@ -24,7 +24,7 @@ model:
 keyframe_weighting:
   enabled: true
   # 切换帧权重可改为 1/2/4/8/16；1 或关闭时等价于原等权 BC。
-  changepoint_weight: 4.0
+  changepoint_weight: 16.0
 training:
   device: auto
   total_steps: 100000
