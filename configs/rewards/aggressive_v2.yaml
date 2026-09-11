@@ -1,0 +1,35 @@
+version: aggressive_v2
+
+damage:
+  dealt_scale: 0.0015
+  taken_scale: 0.001
+  self_corner_taken_multiplier: 1.25
+  opponent_corner_dealt_multiplier: 1.15
+  hit_confirm_bonus: 0.05
+
+outcome:
+  win_reward: 10.0
+  loss_penalty: 10.0
+
+positioning:
+  stage_min_x: 40.0
+  stage_max_x: 1240.0
+  corner_margin: 120.0
+  position_delta_clip: 12.0
+  approach_min_distance: 300.0
+  approach_reward_per_unit: 0.0001
+  retreat_min_distance: 350.0
+  retreat_penalty_per_unit: 0.00005
+  corner_escape_reward_per_unit: 0.0002
+  corner_hold_grace_frames: 45
+  corner_hold_penalty_per_frame: 0.001
+  pressure_max_distance: 350.0
+  opponent_corner_pressure_reward: 0.0005
+
+demonstration_weighting:
+  win_round_weight: 1.5
+  loss_round_weight: 0.65
+  winning_attack_multiplier: 1.5
+  losing_corner_backward_multiplier: 0.5
+  minimum_weight: 0.25
+  maximum_weight: 3.0

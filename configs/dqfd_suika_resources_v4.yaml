@@ -1,0 +1,88 @@
+version: 2
+
+data:
+  format: resources_v4
+  # 直接使用本机已有 6000 个原版/镜像 NPZ 和固定划分，不复制数据。
+  source_dir: ../soku_cql/data/replay_shards_resources_v4_mirror
+  source_split_file: ../soku_cql/data/replay_shards_resources_v4_mirror/train_val_split.json
+  split_manifest: data/dqfd_resources_v4/split_manifest.json
+  normalization_file: data/dqfd_resources_v4/normalization.json
+  reports_dir: reports/dqfd_resources_v4
+  preprocessing_version: dqfd_resources_v4_observation_v1
+  history_len: 32
+  action_shift: 1
+  max_objects_per_side: 3
+  cache_gb: 4.0
+  horizontal_positive_is_right: true
+  direction_positive_faces_right: true
+  vertical_positive_is_down: true
+
+model:
+  model_type: tcn_entity_dueling_dqn_resources_v4
+  num_actions: 144
+  action_vocab_size: 2048
+  block_vocab_size: 512
+  weather_vocab_size: 32
+  action_embedding_dim: 32
+  block_embedding_dim: 8
+  weather_embedding_dim: 8
+  state_hidden_dim: 256
+  temporal_channels: [64, 64, 128, 128]
+  temporal_output_dim: 128
+  temporal_kernel_size: 3
+  temporal_dropout: 0.05
+  object_entity_dim: 64
+  object_output_dim: 128
+  object_dropout: 0.05
+  fusion_hidden_dim: 512
+  fused_dim: 256
+  dueling_hidden_dim: 128
+
+rl:
+  gamma: 0.99
+  n_step: 3
+  batch_size: 128
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  prioritized_replay_alpha: 0.6
+  prioritized_replay_beta_start: 0.4
+  prioritized_replay_beta_end: 1.0
+  prioritized_replay_beta_anneal_steps: 500000
+  demo_priority_bonus: 1.0
+  priority_epsilon: 0.000001
+  target_update_mode: hard
+  target_update_interval: 5000
+  target_soft_tau: 0.005
+  margin: 0.8
+  lambda_td1: 1.0
+  lambda_nstep: 1.0
+  lambda_demo: 1.0
+  lambda_l2: 0.00001
+
+reward:
+  # 沿用旧 DQfD v1 的伤害差和终局奖励，不读取可能含其他 shaping 的 NPZ rewards。
+  damage_scale: 0.001
+  round_win_reward: 10.0
+  round_loss_reward: -10.0
+
+training:
+  device: auto
+  amp: true
+  grad_clip: 10.0
+  seed: 20260901
+  cpu_threads: 4
+  deterministic_evaluation: true
+  num_steps: 500000
+  eval_interval: 1000
+  checkpoint_interval: 1000
+  snapshot_interval: 1000
+  # 大数据默认有界缓存；需要全量预加载时提高 cache_gb，并确认内存足够。
+  preload_shards: false
+  log_interval: 100
+  validation_batches: 200
+  q_warning_mean_abs: 100.0
+  q_warning_max_abs: 1000.0
+  checkpoint_dir: checkpoints/dqfd_resources_v4
+  tensorboard_dir: runs/dqfd_resources_v4
+  phase_name: dqfd_resources_v4
+  num_workers: 0

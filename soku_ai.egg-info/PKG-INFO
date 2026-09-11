@@ -1,0 +1,396 @@
+Metadata-Version: 2.4
+Name: soku-ai
+Version: 0.1.0
+Summary: TH123 Suika DQfD 训练与推理工程
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: pandas>=2.0
+Requires-Dist: pyarrow>=12.0
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: torch>=2.1
+Requires-Dist: tensorboard>=2.14
+Requires-Dist: scikit-learn>=1.3
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+
+# TH123 Suika DQfD AI
+
+本工程把《东方非想天则》高手 Replay 转换为西瓜第一视角的离线强化学习数据，并训练一个 Temporal + Projectile-aware + Dueling Double DQN。当前阶段只处理结构化 Replay 数据，不实现 DLL、按键注入、自动开局或真实游戏 Environment。
+
+当前原始数据位于 `C:\FXTZ_AI\data\replay-training`，共 81 组通过校验的主 CSV、81 组对象 CSV 和 81 个完成标记。Python 工程与数据采集工具完全分离，不会修改原始 CSV。
+
+## 为什么采用这条路线
+
+DQfD 不是纯 Behavior Cloning。BC 只要求复现专家动作，DQfD 还使用一步 TD、N-step TD 和未来奖励学习 Q 值；高手动作通过 large-margin loss 提供先验，未来接入在线环境后仍可继续优化“赢”，而不是永远受限于“像专家”。
+
+第一版选择 DQN 而不是 PPO，是因为现阶段只有固定 Replay，没有可交互环境，也没有 PPO 所需的 on-policy rollout。离散的 144 动作天然适合 Q Network；未来真实环境接入后可以在同一网络和经验回放上继续 Double DQN。
+
+- Double DQN：online network 选择下一动作，target network 估值，减轻直接取 target max 的过估计。
+- Dueling Network：分别建模状态价值 `V(s)` 和动作优势 `A(s,a)`，大量动作价值相近时更容易学习状态本身的价值。
+- Prioritized Replay：按 TD error 提高重要 Transition 的采样概率，并用 IS weight 修正偏差；Demo 还有额外 priority bonus。
+- N-step Return：在一步反馈之外传播更远的伤害和终局信息，默认 `n_step=3`。
+- TCN：固定 32 帧因果历史适合 Replay Buffer 随机采样，不需要 LSTM/GRU hidden state、burn-in 或跨 batch 状态管理。
+- Entity Encoder：所有 Object/Projectile 共用一个 MLP，再分别对双方做 masked mean/max pooling；对象顺序和数量可变时仍保持固定输出。
+
+HP 不进入 Observation，避免第一版策略把血量当作战术捷径；HP 只用于计算伤害和回合胜负 Reward。卡牌、手牌、换卡和符卡输入也不进入第一版 Observation/Action，后续应作为独立策略扩展，而不是在首版同时增加高维状态和稀疏动作。
+
+## 数据契约
+
+每场 Replay 必须同时具有：
+
+```text
+xxx.csv
+xxx.objects.csv
+xxx.csv.done
+```
+
+主表与对象表严格通过 `(sample_serial, battle_frame)` 同步。Validator 检查：
+
+1. `sample_serial` 连续性。
+2. 有效战斗 trajectory 内的 `battle_frame` 连续性。
+3. 对象键是否都存在于主表。
+4. 实际对象行数、`recorded_object_count` 和 `total_object_count` 是否一致。
+5. `match_state`、回合、源行和帧号是否形成正确 round boundary。
+
+默认只使用 `match_state=2` 的实际战斗帧。回合准备、结束动画和重复尾帧不构造 Transition。
+
+## Suika 第一视角
+
+`suika_character_id` 默认是 9，但只在 YAML 中配置。预处理先判断 Suika 位于 left 还是 right，再统一重命名为 `self` 和 `opponent`。同一个 Replay 内侧别不稳定会直接报错；没有 Suika 的 Replay 不进入数据集。
+
+模型不学习屏幕物理左/右两套镜像策略。水平输入转换成：
+
+```text
+NONE / FORWARD / BACKWARD
+```
+
+FORWARD 表示沿角色当前朝向前进，BACKWARD 表示反方向。输入正负号和角色朝向的实际定义都在配置中，不写死在模型里。垂直输入转换成 `NONE / UP / DOWN`。
+
+## 144 动作
+
+第一版动作为：
+
+```text
+Horizontal: NONE / FORWARD / BACKWARD
+Vertical:   NONE / UP / DOWN
+A/B/C/D:    released / pressed
+```
+
+总数为 `3 × 3 × 2⁴ = 144`。稳定编号按以下固定字段顺序做混合进位编码：
+
+```text
+horizontal → vertical → A → B → C → D
+```
+
+`encode_action()` 与 `decode_action()` 是确定性双射，完整映射和版本会写入每个 checkpoint。CSV 中按钮持续帧计数仍保存在预处理分片的 history 中，但 DQN 动作只使用是否非零。
+
+## Replay 如何变成 Transition
+
+每个有效 round 独立形成 trajectory。对于配置默认值 `action_shift=1`：
+
+```text
+state[row t]
+  → action[input row t+1]
+  → reward[HP(t) - HP(t+1)]
+  → next_state[row t+1]
+```
+
+如果人工对齐报告证明导出器记录的是同帧输入，将 `action_shift` 改为 0 即可，不需要修改 Dataset 或模型。`action_shift=0` 时 history 会排除当前帧输入，防止把待预测 expert action 泄漏给网络。
+
+History 只使用当前 episode 内已经发生的信息；不足 32 帧时左侧 padding 并生成 mask，不会跨 round 拼接。
+
+旧版 Reward 只使用对称伤害和回合结果：
+
+```text
+reward = damage_scale × damage_dealt
+       - damage_scale × damage_taken
+       + terminal round result
+```
+
+主动性 V2 把 Reward 独立放在 `configs/rewards/aggressive_v2.yaml`，训练配置只通过 `reward_file` 引用。造成伤害和受到伤害不再共用一个系数，站位与移动也按独立分量计算：
+
+```text
+damage_dealt              造成伤害
+damage_taken              受到伤害
+self_corner_damage         自己在墙角受伤的额外惩罚
+opponent_corner_damage     对手在墙角受伤的额外奖励
+hit_confirm                实际造成伤害时的命中奖励
+approach                   远距离且真实缩短距离的前进奖励
+far_retreat                远距离且继续拉远距离的后撤惩罚
+corner_escape              从自己墙角向场内移动的奖励
+corner_hold                超过宽限帧后继续缩墙的惩罚
+opponent_corner_pressure   对手在墙角时保持有效压制的奖励
+round_outcome              回合胜负奖励
+```
+
+每个分量都能单独修改，设为 `0` 即关闭。离线 DQfD v1 仍通过“少受伤、墙角受伤额外惩罚、成功出墙后不再受罚”体现防御，不直接给 BACKWARD 输入加分。实时协议 v3 新增的成功防御与擦弹状态只接入 PPO 战术适配器，不改变旧 DQfD 数据结构。
+
+## Observation
+
+State Encoder 使用双方位置、速度、朝向、灵力、动作/动作块/动作帧、Hitstop、连击状态、对象数，以及舞台、天气和相对位置/速度/距离。动作、角色、天气和舞台 ID 使用 Embedding，不作为普通 float。
+
+Temporal Encoder 使用 32 帧历史：Suika 原始方向/按钮计数、双方动作/动作块/动作帧和相对位置。网络是 dilation 1/2/4/8 的四层 residual causal TCN。
+
+Object Encoder 分别处理 self objects 和 opponent objects。每个对象使用相对 Suika 的位置/速度、朝向、动作、动作块、动作帧、Hitstop、命中/判定框数量、Frame/Attack flags 和伤害。内存地址、PID、`sample_serial`、卡牌和 HP 绝不会成为模型输入。
+
+现有采集数据中的对象 `gravity_x/gravity_y` 大量来自未初始化内存，包含 NaN 和接近 float32 极限的伪数值，无法可靠恢复。训练管线明确将这两个槽位置 0，并把禁用字段写入 normalization；其余对象数值字段仍执行严格有限值检查。位置、速度、动作、伤害、弹幕对象和判定相关字段不受影响。
+
+每侧默认保留距离 Suika 最近的 64 个对象，输出 object mask。预处理报告统计截断率；截断率超过 1% 会给出警告。
+
+## 模型结构
+
+```text
+Continuous + categorical embeddings → State Encoder  → 256
+32-frame causal TCN                 → Temporal       → 128
+Self Object shared encoder + pool   → Entity         → 128
+Opponent Object shared encoder      → Entity         → 128
+                                                     ─────
+                                                     640
+640 → Fusion 512 → 256
+256 → Value 128 → 1
+256 → Advantage 128 → 144
+Q = V + A - mean(A)
+```
+
+默认模型目标为 1M～5M 参数，适配 RTX 3050 Laptop。`inspect_model.py` 会打印总参数、可训练参数、估算模型大小和主要模块 shape。
+
+## 安装
+
+Python 要求 3.10+，PyTorch 2.x。先根据本机 CUDA 版本安装合适的 PyTorch，再安装其余依赖：
+
+```powershell
+cd C:\FXTZ_AI\soku_ai
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+CUDA 可用时训练脚本自动使用 CUDA，否则可以在 CPU 上运行。AMP 只在 CUDA 设备启用。
+
+## 推荐执行顺序
+
+所有命令都在 `C:\FXTZ_AI\soku_ai` 执行。
+
+### 1. 原始数据校验
+
+```powershell
+python scripts/validate_raw_data.py --config configs/dqfd_suika_v1.yaml
+```
+
+输出 `reports/raw_validation_report.json`。任何 Replay 校验失败时脚本返回非零状态。
+
+### 2. 创建固定训练数据清单
+
+```powershell
+python scripts/create_split.py --config configs/dqfd_suika_v1.yaml
+```
+
+当前配置把 81 场全部写入 `train`，`validation/test` 为空。清单的作用是固定本次训练使用的 Replay 集合，并用 SHA-256 写入 Checkpoint，防止续训时误用另一批数据。不要在实验中途用 `--force` 重建清单。
+
+### 3. 人工确认 State/Action 对齐
+
+```powershell
+python scripts/alignment_report.py --config configs/dqfd_suika_v1.yaml
+```
+
+查看 `reports/alignment_report.csv` 中输入变化前后的帧、位置、原始输入和 Action ID，再决定 `action_shift` 是 1 还是 0。
+
+### 4. 生成 NPZ 分片与训练集归一化
+
+```powershell
+python scripts/preprocess_replays.py --config configs/dqfd_suika_v1.yaml
+```
+
+每场 Replay 生成一个 `.npz`，包含 state、categorical、history 源数组、action、总 reward、各 reward 分量、回合结果、训练样本权重、done、packed objects 和 offsets。当前 81 场全部属于 train，因此 normalization 使用全部有效 Replay 拟合。Reward 文件、Reward 引擎版本或预处理版本变化后，脚本会通过哈希自动重建不匹配的分片，不会静默沿用旧 Reward。
+
+数据质量报告输出到：
+
+```text
+reports/dataset_report.json
+reports/dataset_report.md
+```
+
+报告包括 Replay/帧/Transition/round 数、Suika 左右比例、对手/天气/动作分布、按钮频率、对象截断率、胜负、Reward 范围、无效帧和帧缺口。
+
+### 5. 单 Replay 过拟合
+
+```powershell
+python scripts/overfit_single_replay.py --config configs/dqfd_suika_v1.yaml --steps 5000
+```
+
+这一步只验证固定 batch 上 TD/margin loss 是否能下降、expert top-1 是否上升，不代表泛化能力。
+
+### 6. 正式 Demonstration 预训练
+
+```powershell
+python scripts/train_dqfd_demo.py --config configs/dqfd_suika_v1.yaml
+```
+
+断点继续（请使用单行命令）：
+
+```powershell
+python scripts/train_dqfd_demo.py --config configs/dqfd_suika_v1.yaml --resume checkpoints/last.pt
+```
+
+支持 `--device` 和 `--seed` 覆盖。全量训练模式不执行离线验证，也不自动选择 `best.pt`。每 1000 Step 覆盖一次 `checkpoints/last.pt`，它包含 online/target、优化器、AMP、PER 和 RNG，可用于完整续训；同时生成 `checkpoints/snapshots/step_XXXXXXXXX.pt` 轻量模型版本，供实战对比和推理导出。轻量版本不能用于续训。
+
+按 `Ctrl+C` 时训练器会先把当前 Step 写入 `last.pt` 和对应编号快照，再安全退出。训练启动时会把 81 个 NPZ 分片和归一化数组预加载到内存，避免 PER 随机采样反复解包文件；建议至少保留约 2 GB 可用内存。
+
+#### 动作 0 偏置微调
+
+已有模型如果在实战中长期选择动作 0，可运行根目录的一键脚本：
+
+```text
+run_noop_finetune.cmd
+```
+
+等价命令为：
+
+```powershell
+python scripts/train_dqfd_demo.py --config configs/dqfd_suika_noop_finetune.yaml --init-from checkpoints/snapshots/step_000051512.pt
+```
+
+微调只继承原模型网络权重，优化器、Target 网络和 PER 会重新初始化。普通动作 0 的专家 large-margin 权重降为 `0.25`；角色处于站立状态时，动作 0 Transition 权重降为 `0.15`、非零动作权重提高到 `2.0`，并额外约束动作 0 不能长期压过最佳非零动作。规则只针对站立状态，受击、硬直和其他动画状态的无动作 TD 数据仍然保留。微调模型每 1000 Step 分别保存到：
+
+```text
+checkpoints/noop_finetune/last.pt
+checkpoints/noop_finetune/snapshots/step_XXXXXXXXX.pt
+```
+
+中断后续训使用：
+
+```powershell
+python scripts/train_dqfd_demo.py --config configs/dqfd_suika_noop_finetune.yaml --resume checkpoints/noop_finetune/last.pt
+```
+
+```powershell
+tensorboard --logdir runs
+```
+
+每次启动或续训会在 `runs` 下建立独立子目录，避免旧训练曲线和重启后的 Step 混在同一个 run。普通训练查看 `runs`，微调查看 `runs/noop_finetune`。TensorBoard 包括总 loss、一步/N-step/margin loss、TD error、Q 范围、expert top-1/top-5、学习率、PER β、Buffer 大小、动作 0 预测/专家占比、空闲状态动作 0 占比、动作 0 相对优势和 `performance/steps_per_second`。控制台每 100 Step 也会输出实时速度与动作 0 指标。Q 绝对值超过配置阈值时告警，但不会偷偷 clamp Q。
+
+#### 主动性 Reward V2
+
+V2 从动作 0 微调的 Step 21000 权重开始，只继承网络参数并重置优化器、Target 和 PER。先生成带新版 Reward 与样本权重的数据：
+
+```powershell
+.\prepare_aggressive_v2.cmd
+```
+
+生成结果位于 `data/processed_aggressive_v2`，Reward 分量与各站位受伤统计位于 `reports/aggressive_v2/dataset_report.json` 和 `dataset_report.md`。确认报告后启动训练：
+
+```powershell
+.\run_aggressive_v2.cmd
+```
+
+V2 使用 `gamma=0.9995` 和 `n_step=30`，让伤害与回合结果能影响更早的动作。训练样本权重还会提高胜局和胜局进攻样本的学习强度，并降低败局、败局墙角后退样本的学习强度；这部分不改变环境 Reward。完整参数说明见 `docs/reward_tuning.md`。模型每 1000 Step 保存到 `checkpoints/aggressive_v2`，TensorBoard 写入 `runs/aggressive_v2`。
+
+### 7. 实战评估
+
+当前配置不保留 validation/test，最终效果通过游戏实战评估。离线损失、TD error、Q 值范围和训练集 expert top-k 只用于监控训练是否正常，不作为泛化结论。
+
+### 8. 检查与导出
+
+```powershell
+python scripts/inspect_model.py --config configs/dqfd_suika_v1.yaml
+python scripts/inspect_checkpoint.py checkpoints/last.pt
+python scripts/export_model.py --checkpoint checkpoints/last.pt --output-dir exports
+```
+
+导出内容包括纯 `state_dict` 包和 TorchScript。推理输入是与 Demo Dataset 相同的、已经应用训练集 normalization 的完整 Observation，输出 `[B,144]` Q 值和 greedy action。
+
+## DQfD Loss 和 Checkpoint
+
+训练总损失为：
+
+```text
+λ_td1 × L_td1
++ λ_nstep × L_nstep
++ λ_demo × L_large_margin
++ λ_idle_no_op × L_idle_no_op
++ λ_l2 × L_l2
+```
+
+所有权重都在 YAML 中配置。Target network 默认每 5000 optimizer steps hard update，也可切换 Polyak soft update。
+
+Checkpoint 不 pickle 整个 model object，而是保存：online/target state dict、optimizer、AMP scaler、配置、normalization、动作映射、step/epoch、随机种子和 RNG 状态、split hash、预处理/网络/checkpoint 版本、最佳指标及 PER tree。
+
+## 测试
+
+测试源码覆盖动作 144 双射、镜像方向、left/right 统一、history round boundary、shift 0/1、对象 padding/mask、空对象 NaN、对象数量 1/8/32、TCN/Q shape、Dueling 公式、Double DQN、N-step、PER、margin loss、完整 backward、Checkpoint Q 一致性、MockEnv 和可选 CUDA smoke test。
+
+```powershell
+pytest
+```
+
+## 在线环境与 Self-play 预留
+
+`soku_ai.env.interface.SokuEnv` 定义：
+
+```python
+reset() -> Observation
+step(action_id) -> observation, reward, terminated, truncated, info
+close()
+```
+
+未来真实 TH123 环境必须输出与 Replay Dataset 完全相同的 Observation Schema，因此模型无需修改。`OnlineDQNTrainer` 只依赖该 Protocol；目前提供的 `MockSokuEnv` 仅检查接口，绝不代表真实游戏动力学。
+
+`OpponentPolicy.select_action(observation)` 与 Agent 解耦，未来可接神 AI、固定旧模型、当前模型 snapshot、规则 AI 或真人。真实游戏接入后，Demo 固定在 Replay Buffer 前缀，agent 数据只能覆盖在线环形区，从而继续 Demo + agent PER、Double DQN 和 Self-play。
+
+## 离线评估的限制
+
+高 expert-action accuracy 只说明网络在离线数据分布上更接近专家动作，不能证明它能击败专家，更不能证明已经成为“神 AI”。Replay 不包含模型偏离专家轨迹后的反事实结果，也存在分布外动作的 Q 估计误差。
+
+真正强度最终必须通过真实 TH123 online Environment、对神 AI/高手真人的实战胜率、固定版本对手池和 Self-play 验证。第一阶段产物只是一个具有高手 Demonstration 先验、能够输出 144 动作 Q 值并可继续在线优化的网络。
+
+## 实时 AI 运行器
+
+实时运行器已经把以下模块串联起来：
+
+```text
+SokuDataBridge.dll
+  → Local\SokuDataBridge.State.v3
+  → LiveObservationBuilder
+  → SokuDQNAgent
+  → 144 动作解码
+  → Windows SendInput
+```
+
+启动前必须满足：
+
+1. 游戏已经启用 `SokuDataBridge.dll`。
+2. 当前 Python 环境可以正常导入本工程和 PyTorch。
+3. 游戏内由键盘控制的角色是萃香。运行器会自动识别萃香位于 left 或 right，但外部键盘输入只能作用于游戏当前的本地键盘角色。
+4. GUI 中的方向键和 A/B/C/D 必须与游戏键位完全一致。默认值为方向键、`Z/X/C/A`。
+
+在已经激活训练环境的终端执行：
+
+```powershell
+cd C:\FXTZ_AI\soku_ai
+python scripts\run_live_ai.py
+```
+
+也可以在该终端执行纯 ASCII 启动脚本：
+
+```powershell
+.\run_live_ai.cmd
+```
+
+未指定模型时，GUI 会从普通训练、动作 0 微调和主动性 V2 的 snapshots 目录中选择最后写入的编号快照；没有编号快照时才回退到对应的 `last.pt`。训练正在运行时建议使用固定编号快照，避免模型在一次实战中途变化。
+
+实时输入历史允许短暂漏帧：共享内存未被 Python 及时读到的少量帧会沿用上一帧输入，不再清空整个 32 帧窗口。实时动作始终直接采用模型 Q 值最大的动作，不附加动作 0 熔断或强制替换规则。
+
+操作顺序：
+
+1. 启动游戏并进入由键盘控制萃香的对战。
+2. 启动实时 AI GUI，确认模型路径和键位。
+3. 点击“启动 / 继续”。GUI 会尝试把游戏切回前台，等待 300 ms 后才发送输入。
+4. 点击 GUI“暂停”会释放全部 AI 按键；点击“继续”会重新聚焦游戏。
+5. 任意时候按 `F10` 都会紧急暂停并释放全部按键。
+6. 游戏失去前台焦点时，键盘控制会自动暂停。关闭“启用键盘控制”可以保留实时推理和 Q 值显示，但不发送输入。
+
+运行设置位于 `configs/live_ai.json`，包含轮询间隔、恢复控制延迟、紧急暂停键和默认键位。模型或键位发生变化后，应先点击“停止”，再重新启动运行器。
+
+当前版本只执行模型推理和实战控制，不会把在线对局自动加入 Replay Buffer，也不会进行在线 DQN 更新。在线训练需要在实战控制稳定后单独接入奖励、终局和 agent replay 数据。

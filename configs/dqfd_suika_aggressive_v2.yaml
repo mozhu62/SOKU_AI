@@ -1,0 +1,97 @@
+version: 2
+reward_file: rewards/aggressive_v2.yaml
+
+data:
+  raw_dir: ../data/replay-training
+  processed_dir: data/processed_aggressive_v2
+  split_manifest: data/splits/split_manifest.json
+  normalization_file: data/processed_aggressive_v2/normalization.json
+  reports_dir: reports/aggressive_v2
+  suika_character_id: 9
+  history_len: 32
+  action_shift: 1
+  max_objects_per_side: 64
+  valid_match_states: [2]
+  valid_battle_sub_modes: [2]
+  horizontal_positive_is_right: true
+  direction_positive_faces_right: true
+  vertical_positive_is_down: true
+  split_train_ratio: 1.0
+  split_validation_ratio: 0.0
+  split_test_ratio: 0.0
+  shard_cache_size: 81
+  preprocessing_version: suika_v1
+
+model:
+  model_type: tcn_entity_dueling_dqn
+  num_actions: 144
+  action_vocab_size: 2048
+  block_vocab_size: 512
+  character_vocab_size: 64
+  weather_vocab_size: 32
+  stage_vocab_size: 64
+  action_embedding_dim: 32
+  block_embedding_dim: 8
+  character_embedding_dim: 16
+  weather_embedding_dim: 8
+  stage_embedding_dim: 8
+  state_hidden_dim: 256
+  temporal_channels: [64, 64, 128, 128]
+  temporal_output_dim: 128
+  temporal_kernel_size: 3
+  temporal_dropout: 0.05
+  object_entity_dim: 64
+  object_output_dim: 128
+  object_dropout: 0.05
+  fusion_hidden_dim: 512
+  fused_dim: 256
+  dueling_hidden_dim: 128
+
+rl:
+  gamma: 0.9995
+  n_step: 30
+  batch_size: 128
+  learning_rate: 0.00002
+  weight_decay: 0.00001
+  prioritized_replay_alpha: 0.6
+  prioritized_replay_beta_start: 0.4
+  prioritized_replay_beta_end: 1.0
+  prioritized_replay_beta_anneal_steps: 100000
+  demo_priority_bonus: 1.0
+  priority_epsilon: 0.000001
+  target_update_mode: hard
+  target_update_interval: 5000
+  target_soft_tau: 0.005
+  margin: 0.8
+  no_op_action_id: 0
+  idle_state_action_id: 0
+  no_op_margin_weight: 0.5
+  idle_no_op_margin_weight: 0.1
+  idle_no_op_transition_weight: 0.5
+  idle_non_no_op_transition_weight: 1.5
+  idle_no_op_advantage_margin: 0.02
+  lambda_td1: 1.0
+  lambda_nstep: 1.0
+  lambda_demo: 1.0
+  lambda_idle_no_op: 0.1
+  lambda_l2: 0.00001
+
+training:
+  phase_name: aggressive_v2
+  device: auto
+  amp: true
+  grad_clip: 10.0
+  seed: 20260902
+  deterministic_evaluation: true
+  num_steps: 100000
+  eval_interval: 0
+  checkpoint_interval: 1000
+  snapshot_interval: 1000
+  preload_shards: true
+  log_interval: 100
+  validation_batches: 200
+  q_warning_mean_abs: 100.0
+  q_warning_max_abs: 1000.0
+  checkpoint_dir: checkpoints/aggressive_v2
+  tensorboard_dir: runs/aggressive_v2
+  num_workers: 0

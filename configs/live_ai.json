@@ -1,0 +1,18 @@
+{
+  "checkpoint": "",
+  "device": "auto",
+  "poll_interval_ms": 2,
+  "focus_delay_ms": 300,
+  "emergency_pause_key": "F10",
+  "control_enabled": true,
+  "key_bindings": {
+    "left": "LEFT",
+    "right": "RIGHT",
+    "up": "UP",
+    "down": "DOWN",
+    "a": "Z",
+    "b": "X",
+    "c": "C",
+    "d": "A"
+  }
+}
