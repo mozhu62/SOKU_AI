@@ -12,7 +12,7 @@ data:
   history_len: 32
   action_shift: 1
   max_objects_per_side: 3
-  cache_gb: 4.0
+  cache_gb: 32.0
   horizontal_positive_is_right: true
   direction_positive_faces_right: true
   vertical_positive_is_down: true
@@ -66,7 +66,7 @@ reward:
   round_loss_reward: -10.0
 
 training:
-  device: auto
+  device: cuda
   amp: true
   grad_clip: 10.0
   seed: 20260901
@@ -77,7 +77,7 @@ training:
   checkpoint_interval: 1000
   snapshot_interval: 1000
   # 大数据默认有界缓存；需要全量预加载时提高 cache_gb，并确认内存足够。
-  preload_shards: false
+  preload_shards: true
   log_interval: 100
   validation_batches: 200
   q_warning_mean_abs: 100.0
