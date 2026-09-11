@@ -8,13 +8,14 @@ import torch
 from torch.nn import functional as F
 
 from .models import BCNetwork
-from .config import active_modules, keyframe_weighting_settings
+from .config import active_modules, keyframe_weighting_settings, palr_settings
 from .action_space import ACTION_COUNT, NEUTRAL_ACTION_ID, frequency_rows
 from .action_diagnostics import (
     BATCH_COUNT_KEYS, BATCH_RATE_KEYS, KEYFRAME_SUM_KEYS, KEYFRAME_RATE_KEYS,
     batch_history_rates, keyframe_rates,
 )
 from .keyframes import build_changepoint_mask
+from .palr import sampled_palr
 
 
 def device_for(name):
@@ -150,6 +151,8 @@ def aggregate_metrics(rows):
         raise ValueError("验证没有有效样本")
     result = {}
     for key in rows[0]:
+        if key.startswith("validation_palr_") or key == "validation_hscic":
+            continue
         if key in ("samples", "joint_data_top", "joint_pred_top", *BATCH_COUNT_KEYS, *BATCH_RATE_KEYS,
                    *KEYFRAME_SUM_KEYS, *KEYFRAME_RATE_KEYS):
             continue
@@ -173,6 +176,15 @@ def aggregate_metrics(rows):
         if all(all(key in row for key in KEYFRAME_SUM_KEYS) for row in rows):
             result.update({key: sum(row[key] for row in rows) for key in KEYFRAME_SUM_KEYS})
             result.update(keyframe_rates(result))
+    if any("validation_hscic" in row for row in rows):
+        measured = [row for row in rows if row.get("validation_hscic") is not None]
+        used = sum(row["validation_palr_sampled_samples"] for row in measured)
+        # 每批固定子样本的 HSCIC 按实际参与帧数汇总，不冒充整份验证集的联合核估计。
+        result["validation_hscic"] = (sum(row["validation_hscic"] * row["validation_palr_sampled_samples"]
+                                          for row in measured) / used) if used else None
+        for key in ("eligible_samples", "sampled_samples", "skipped_batches"):
+            name = "validation_palr_" + key
+            result[name] = sum(row.get(name, 0) for row in rows)
     return result
 
 
@@ -206,14 +218,31 @@ class Learner:
         for group in self.optimizer.param_groups:
             group.update(lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
 
-    def losses(self, batch):
+    def losses(self, batch, *, measure_palr=False, palr_generator=None):
         cfg = self.config["training"]
+        settings = palr_settings(self.config.get("palr"))
+        use_aux = settings["enabled"] or measure_palr
         with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.amp):
-            logits = self.model(batch["observation"], cfg["burn_in"], batch["burn_lengths"])
+            if use_aux:
+                logits, aux = self.model(batch["observation"], cfg["burn_in"], batch["burn_lengths"], return_aux=True)
+            else:
+                logits = self.model(batch["observation"], cfg["burn_in"], batch["burn_lengths"])
         # CE 在 float32 中执行；网络输出原始 logits，不预先做 softmax。
-        return classification_parts(logits, batch["joint_action_id"], batch["mask"], cfg["label_smoothing"],
-                                    previous_joint_action_id=supervised_previous_actions(batch, cfg["burn_in"]),
-                                    keyframe_weighting=self.config.get("keyframe_weighting"))
+        bc_loss, parts = classification_parts(logits, batch["joint_action_id"], batch["mask"], cfg["label_smoothing"],
+                                              previous_joint_action_id=supervised_previous_actions(batch, cfg["burn_in"]),
+                                              keyframe_weighting=self.config.get("keyframe_weighting"))
+        parts["loss_keyframe_bc"] = bc_loss
+        if not use_aux:
+            # 关闭时不抽样、不建核、不加零项；返回原 CE 张量，保留原数值和 RNG 路径。
+            return bc_loss, parts
+        if "previous_expert_action_id" not in batch:
+            raise ValueError("PALR 缺少 Dataset 的 previous_expert_action_id 监督，禁止使用 observation 历史代替")
+        temporal = aux["temporal_feature"]
+        regularizer, stats = sampled_palr(temporal, batch["joint_action_id"], batch["previous_expert_action_id"],
+                                          batch["mask"], settings, generator=palr_generator)
+        parts.update(palr_stats=stats, loss_palr=regularizer, temporal_feature=temporal)
+        total = bc_loss + settings["alpha"] * regularizer if settings["enabled"] else bc_loss
+        return total, parts
 
     def train_batch(self, raw_batch, diagnostics=False):
         self.model.train()
@@ -252,18 +281,37 @@ class Learner:
             settings = keyframe_weighting_settings(self.config.get("keyframe_weighting"))
             result.update(keyframe_weighting_enabled=settings["enabled"],
                           changepoint_weight=settings["changepoint_weight"] if settings["enabled"] else 1.0)
+            palr = palr_settings(self.config.get("palr"))
+            raw_palr = float(parts["loss_palr"].detach()) if "loss_palr" in parts else 0.0
+            temporal = parts.get("temporal_feature")
+            result.update(loss_total=float(loss.detach()), loss_keyframe_bc=float(parts["loss_keyframe_bc"].detach()),
+                          loss_palr=raw_palr, palr_loss=raw_palr,
+                          palr_enabled=palr["enabled"], palr_alpha=palr["alpha"], palr_sample_size=palr["sample_size"],
+                          palr_weighted_loss=palr["alpha"] * raw_palr if palr["enabled"] else 0.0,
+                          temporal_feature_norm=float(temporal.detach().float()[batch["mask"]].norm(dim=-1).mean())
+                          if temporal is not None else None,
+                          tcn_gradient_norm=gradients.get("tcn"))
+            result.update(parts.get("palr_stats", {"palr_eligible_samples": None, "palr_sampled_samples": 0,
+                                                   "palr_skipped": True, "palr_skip_reason": "disabled"}))
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         result["optimization_seconds"] = time.perf_counter() - started
         return result
 
     @torch.no_grad()
-    def validate_batch(self, raw_batch):
+    def validate_batch(self, raw_batch, *, palr_seed=None):
         self.model.eval()
         batch = tensor_batch(raw_batch, self.device)
-        loss, parts = self.losses(batch)
-        if not torch.isfinite(loss):
-            raise FloatingPointError("验证损失出现 NaN/Inf")
+        # 即使训练关闭 PALR 也测量泄漏；局部 RNG 不消耗或改变 checkpoint 内训练 RNG。
+        generator = torch.Generator(device="cpu").manual_seed(self.config["seed"] if palr_seed is None else palr_seed)
+        loss, parts = self.losses(batch, measure_palr=True, palr_generator=generator)
+        if not (torch.isfinite(loss) & torch.isfinite(parts["loss_palr"])):
+            raise FloatingPointError("验证损失或 HSCIC 出现 NaN/Inf")
+        stats = parts["palr_stats"]
         return {**classification_metrics(parts, diagnostic_previous_actions(batch, self.config["training"]["burn_in"])),
                 # 验证 loss 继续是等权 CE；NLL/Top1/Top5 和 checkpoint 选优不受训练权重影响。
-                "loss": float(parts["per_frame_ce"][batch["mask"]].mean())}
+                "loss": float(parts["per_frame_ce"][batch["mask"]].mean()),
+                "validation_hscic": None if stats["palr_skipped"] else float(parts["loss_palr"]),
+                "validation_palr_eligible_samples": stats["palr_eligible_samples"],
+                "validation_palr_sampled_samples": stats["palr_sampled_samples"],
+                "validation_palr_skipped_batches": int(stats["palr_skipped"])}

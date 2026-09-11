@@ -199,8 +199,9 @@ class KeyframeMetricTests(unittest.TestCase):
 
     def test_learner_wiring_and_validation_loss_remain_unweighted(self):
         class FixedNetwork(torch.nn.Module):
-            def forward(self, observation, burn_in, burn_lengths):
-                return observation["test_logits"][:, burn_in:]
+            def forward(self, observation, burn_in, burn_lengths, *, return_aux=False):
+                logits = observation["test_logits"][:, burn_in:]
+                return (logits, {"temporal_feature": logits[..., :32]}) if return_aux else logits
 
         learner = Learner.__new__(Learner)
         learner.config = copy.deepcopy(DEFAULTS)
@@ -211,7 +212,7 @@ class KeyframeMetricTests(unittest.TestCase):
                     "test_logits": torch.randn(1, 5, 144, generator=torch.Generator().manual_seed(2)),
                     "previous_joint_action_id": torch.tensor([[144, 10, 10, 10, 144]])},
                  "joint_action_id": torch.tensor([[10, 20, 30]]), "mask": torch.ones(1, 3, dtype=torch.bool),
-                 "burn_lengths": torch.tensor([2])}
+                 "burn_lengths": torch.tensor([2]), "previous_expert_action_id": torch.tensor([[10, 10, 144]])}
         loss, parts = learner.losses(batch)
         self.assertEqual(parts["weights"].tolist(), [[1., 8., 1.]])
         validation = learner.validate_batch(batch)
@@ -227,8 +228,8 @@ class KeyframeConfigTests(unittest.TestCase):
         old = copy.deepcopy(DEFAULTS)
         old.pop("keyframe_weighting")
         self.assertFalse(validate(old)["keyframe_weighting"]["enabled"])
-        for path in ("configs/bc_suika.yaml", "configs/bc_suika_tcn32.yaml"):
-            self.assertEqual(load_config(path)["keyframe_weighting"], {"enabled": True, "changepoint_weight": 4.})
+        for path, weight in (("configs/bc_suika.yaml", 16.), ("configs/bc_suika_tcn32.yaml", 4.)):
+            self.assertEqual(load_config(path)["keyframe_weighting"], {"enabled": True, "changepoint_weight": weight})
 
     def test_settings_reject_invalid_weights(self):
         for weight in (True, 0, -1, float("nan"), float("inf"), "4"):

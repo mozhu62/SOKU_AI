@@ -158,14 +158,16 @@ class BCNetwork(nn.Module):
         feature = torch.cat((current, temporal, *objects), dim=-1)
         return self.policy_head(self.fusion(feature))
 
-    def forward(self, obs, burn_in: int = 0, burn_lengths=None):
+    def forward(self, obs, burn_in: int = 0, burn_lengths=None, *, return_aux=False):
         state = self.state_features(obs)
         state, history_mask = self._align_prefix(state, burn_in, burn_lengths)
         main_state = state[:, burn_in:]
         current = self.current_encoder.forward_features(main_state)
         temporal = self.tcn(state, history_mask)[:, burn_in:]
         objects = self.encode_objects(self._main_observation(obs, burn_in))
-        return self._fuse(current, temporal, objects)
+        logits = self._fuse(current, temporal, objects)
+        # PALR 只读取监督段的 TCN 输出；默认推理路径和所有网络参数保持原样。
+        return (logits, {"temporal_feature": temporal}) if return_aux else logits
 
     @torch.no_grad()
     def act(self, obs, memory=None):

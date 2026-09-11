@@ -3,6 +3,7 @@ import {Trend} from '../components/Trend';
 import {useHistory,type Row} from '../api';
 import {number,percent} from '../lib/utils';
 import {JointFrequency} from '../components/JointActions';
+import {PalrDiagnostics} from '../components/PalrDiagnostics';
 
 export const moduleLabels:Row={
   current_encoder:'当前状态 · 228D→256D',
@@ -19,7 +20,7 @@ export function Diagnostics({state}:{state:Row}){
   return <><div className="section-intro"><div><h1>模仿学习诊断</h1><p>概率来自记录步更新前的同批状态；梯度和参数变化来自该次更新。</p></div><span>Step {number(last.step,0)}</span></div>
     {error&&<p className="error">{error}</p>}
     <div className="stats-grid">
-      <Stat title="训练优化 CE / 等权未平滑 NLL" value={`${number(last.loss,5)} / ${number(last.nll,5)}`} note={`标签平滑 ${state.config?.training?.label_smoothing??'—'}；关键帧权重 ${state.config?.keyframe_weighting?.enabled?state.config.keyframe_weighting.changepoint_weight:1}。仅无平滑且权重为 1 时两者相同`}/>
+      <Stat title="关键帧 CE / 等权未平滑 NLL" value={`${number(last.loss_keyframe_bc??last.loss,5)} / ${number(last.nll,5)}`} note={`标签平滑 ${state.config?.training?.label_smoothing??'—'}；关键帧权重 ${state.config?.keyframe_weighting?.enabled?state.config.keyframe_weighting.changepoint_weight:1}。PALR 附加项单独显示在下方`}/>
       <Stat title="完整动作 Top-1 / Top-5" value={`${percent(last.joint_accuracy)} / ${percent(last.joint_top5)}`} note={`${number(last.samples,0)} 个有效帧`}/>
       <Stat title="专家动作平均概率" value={percent(last.expert_probability)} note="同批每帧真实标签的 softmax 概率平均值"/>
       <Stat title="归一化熵" value={number(last.normalized_entropy,4)} note={`0 集中 / 1 均匀；原始熵 ${number(last.entropy,4)}`}/>
@@ -29,6 +30,7 @@ export function Diagnostics({state}:{state:Row}){
       <Stat title="平均最大概率" value={percent(last.confidence_mean)} note={`最大 |logit| ${number(last.logit_abs_max,4)}；高置信度不等于正确`}/>
       <Stat title="Neutral 数据 / 预测占比" value={`${percent(last.neutral_data_fraction)} / ${percent(last.neutral_pred_fraction)}`} note="5 + 无按钮 + NONE（ID 192）"/>
     </div>
+    <PalrDiagnostics state={state} rows={rows}/>
     <Card title="动作保持与切换诊断" note="全量基线不使用模型；切换准确率来自最近记录批的有效切换帧，不是额外训练目标">
       <DataTable rows={[
         {name:'训练（记录步）',baseline:last.train_previous_action_baseline??state.data?.train?.previous_action_baseline,accuracy:last.train_action_change_accuracy,top5:last.train_action_change_top5_accuracy,count:last.train_action_change_samples,fraction:last.train_action_change_fraction},

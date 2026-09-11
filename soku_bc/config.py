@@ -18,6 +18,8 @@ MODEL_DEFAULTS = {
     "temporal_mode": "tcn",
 }
 KEYFRAME_DEFAULTS = {"enabled": False, "changepoint_weight": 4.0}
+PALR_DEFAULTS = {"enabled": False, "alpha": 0.1, "sample_size": 256,
+                 "feature_kernel": "rbf", "action_kernel": "categorical", "regularization": 0.001}
 DEFAULTS = {
     "seed": 42,
     "data": {"directory": "../soku_cql/data/replay_shards_resources_v4",
@@ -25,6 +27,7 @@ DEFAULTS = {
              "train_fraction": 0.8, "cache_gb": 4.0, "vertical_positive_is_down": True},
     "model": MODEL_DEFAULTS,
     "keyframe_weighting": KEYFRAME_DEFAULTS,
+    "palr": PALR_DEFAULTS,
     "training": {"device": "auto", "total_steps": 100000, "batch_size": 32,
                  "sequence_length": 32, "burn_in": 31, "replays_per_batch": 4,
                  "learning_rate": 0.0001, "label_smoothing": 0.0, "max_grad_norm": 10.0,
@@ -81,8 +84,28 @@ def keyframe_weighting_settings(settings=None):
     return result
 
 
+def palr_settings(settings=None):
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict) or set(settings) - set(PALR_DEFAULTS):
+        raise ValueError("palr 包含未知配置项")
+    result = {**PALR_DEFAULTS, **settings}
+    if type(result["enabled"]) is not bool:
+        raise ValueError("palr.enabled 必须为布尔值")
+    for key, minimum in (("alpha", 0.0), ("regularization", 1e-6)):
+        value = result[key]
+        if type(value) not in (int, float) or not math.isfinite(value) or value < minimum:
+            raise ValueError(f"palr.{key} 必须为不小于 {minimum} 的有限数值")
+    if type(result["sample_size"]) is not int or not 2 <= result["sample_size"] <= 4096:
+        raise ValueError("palr.sample_size 必须为 2～4096 的整数；建议先使用 256")
+    if result["feature_kernel"] != "rbf" or result["action_kernel"] != "categorical":
+        raise ValueError("PALR 本版只支持 RBF 特征核与 categorical 动作核")
+    return result
+
+
 def validate(config: dict) -> dict:
     config["keyframe_weighting"] = keyframe_weighting_settings(config.get("keyframe_weighting"))
+    config["palr"] = palr_settings(config.get("palr"))
     # 结构字段统一补齐后再校验；旧 GRU 配置会因模式或宽度不兼容而被明确拒绝。
     unknown_model = set(config["model"]) - set(MODEL_DEFAULTS)
     if unknown_model:

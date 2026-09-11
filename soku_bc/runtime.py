@@ -16,7 +16,7 @@ from filelock import FileLock
 from . import checkpoint
 from .action_space import ACTION_SCHEMA, action_catalog
 from .action_diagnostics import DIAGNOSTIC_VERSION, prefixed_history_metrics
-from .config import EDITABLE, resolve, validate
+from .config import EDITABLE, resolve, validate, palr_settings
 from .dataset import ReplayStore, split_replays
 from .learner import Learner, aggregate_metrics
 from .prefetch import BatchPrefetch
@@ -115,6 +115,7 @@ class Runtime:
     def _record(self, kind, values):
         cfg = self.config["training"]
         row = {**values, **self.action_baselines, "action_diagnostics_version": DIAGNOSTIC_VERSION,
+               "palr_config": palr_settings(self.config.get("palr")),
                "algorithm": "bc", "label_smoothing": cfg["label_smoothing"],
                "action_schema": ACTION_SCHEMA, "temporal_mode": self.config["model"]["temporal_mode"],
                "network_version": self.learner.model.spec["network_version"],
@@ -325,7 +326,8 @@ class Runtime:
                 break
             # 每次验证重用相同 seed 和批次形状；结果不会消耗训练采样随机数。
             rng = np.random.default_rng(np.random.SeedSequence([self.config["seed"], index, 1]))
-            rows.append(self.learner.validate_batch(self.store.sample(rng, cfg, "validation")))
+            palr_seed = int(np.random.SeedSequence([self.config["seed"], index, 2]).generate_state(1)[0])
+            rows.append(self.learner.validate_batch(self.store.sample(rng, cfg, "validation"), palr_seed=palr_seed))
             self.publish(message=f"验证批次 {index + 1}/{cfg['validation_batches']}")
         if not rows or len(rows) != cfg["validation_batches"]:
             return
@@ -344,6 +346,9 @@ class Runtime:
                     self.step, result.get("val_previous_action_baseline"), result.get("val_action_change_accuracy"),
                     result.get("val_action_change_top5_accuracy"), result["action_change_samples"], result["samples"])
         # best 只表示当前阶段的离线模仿误差最低，不代表对局胜率最高。
+        LOGGER.info("验证 HSCIC=%s PALR抽样帧=%d 合法帧=%d 跳过批次=%d（不参与 best 选优）",
+                    result.get("validation_hscic"), result.get("validation_palr_sampled_samples", 0),
+                    result.get("validation_palr_eligible_samples", 0), result.get("validation_palr_skipped_batches", 0))
         if self.best is None or result["nll"] < self.best["value"]:
             self.best = {"metric": "validation_nll_v1", "value": result["nll"], "step": self.step, "stage": self.stage}
             self._save("best.pt")
@@ -481,6 +486,12 @@ class Runtime:
                     LOGGER.info("训练诊断 copy_baseline=%s change_top1=%s change_frames=%d/%d",
                                 result.get("train_previous_action_baseline"), result.get("train_action_change_accuracy"),
                                 result["action_change_samples"], result["samples"])
+                    LOGGER.info("PALR enabled=%s alpha=%s sampled=%s/%s skipped=%s reason=%s "
+                                "BC=%.6f PALR=%.6f weighted=%.6f total=%.6f TCN_grad=%s",
+                                result["palr_enabled"], result["palr_alpha"], result["palr_sampled_samples"],
+                                result["palr_eligible_samples"], result["palr_skipped"], result["palr_skip_reason"],
+                                result["loss_keyframe_bc"], result["loss_palr"], result["palr_weighted_loss"],
+                                result["loss_total"], result["tcn_gradient_norm"])
                     window_steps = window_samples = window_seconds = 0
                 self.publish(step=self.step, updates=self.updates, samples=self.samples)
                 if self.step % cfg["validation_interval"] == 0:

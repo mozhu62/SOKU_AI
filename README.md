@@ -19,7 +19,7 @@
 
 GRU 与旧 Memory Fusion 已删除。TCN 直接读取每帧 228D 状态，不再读取压缩后的 Battle Feature。四个残差块使用 dilation 1/2/4/8，每块含两层 kernel=2 因果卷积；输入 stem 使逐帧感受野严格覆盖当前帧及前 31 帧。
 
-详细定义见 [网络与训练口径](docs/architecture.md) 和 [关键帧加权损失](docs/keyframe_weighting.md)。
+详细定义见 [网络与训练口径](docs/architecture.md)、[关键帧加权损失](docs/keyframe_weighting.md) 和 [PALR 正则、对照配置与验证报告](docs/palr.md)。PALR 默认关闭，只增加训练正则，不增加网络参数。
 
 ## 安装与启动
 
@@ -84,4 +84,4 @@ python scripts/play.py
 - 独立实验：只创建同一TCN32 架构的随机初始化分支，用于比较随机种子、冻结项或超参数。
 - 参数与模型：暂停后修改训练参数及冻结当前状态、对象、TCN、融合或分类头。
 
-本次按项目约束仅修改源码和文档，没有编译前端、运行测试、启动训练或进入游戏。
+PALR 变更按该任务的明确要求执行了小规模单元检查和合成批次 benchmark；没有编译前端、启动正式训练或进入游戏。具体通过项及已有失败项见 PALR 报告。

@@ -12,7 +12,9 @@ keyframe_weighting:
   changepoint_weight: 4.0
 ```
 
-两份 bc_suika 配置均已启用权重 4。可测试 1、2、4、8、16；其他大于等于 1 的有限数值也有效。enabled=false 或 weight=1 时数学上等价于原来的等权平均 CE。未配置该段的旧配置/旧 checkpoint 默认关闭加权。
+当前主配置 bc_suika.yaml 启用权重 16，bc_suika_tcn32.yaml 保留权重 4。可测试 1、2、4、8、16；其他大于等于 1 的有限数值也有效。enabled=false 或 weight=1 时数学上等价于原来的等权平均 CE。未配置该段的旧配置/旧 checkpoint 默认关闭加权。
+
+可选 PALR 在上述 CE 外附加正则，不改变此处权重与定义。开启 PALR 后，训练 `loss`/`loss_total` 包含正则，纯 CE 看 `loss_keyframe_bc`；验证的等权指标和选优不变。详见 [PALR 说明](palr.md)。
 
 现有同网络版本 checkpoint 可续训。要对旧模型启用新损失，必须同时指定新 YAML，避免只使用 checkpoint 中的旧配置：
 

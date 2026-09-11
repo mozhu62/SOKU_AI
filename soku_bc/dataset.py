@@ -184,8 +184,11 @@ def read_shard(path: Path, positive_down: bool):
         terminal = shard["terminated"].astype(bool)
         # 沿用 NPZ 的动作对齐规则；终局后的观测不能作为下一段专家动作起点。
         valid[1:] &= ~terminal[:-1]
-        shard["previous_joint_action_id"], shard["previous_action_duration"] = previous_actions(
+        # 从完整专家标签及既有连续性规则生成监督元数据，而非从 observation 反取 PALR 标签。
+        # 单独复制网络输入，防止后续输入侧变换影响真实上一帧专家监督。
+        shard["previous_expert_action_id"], shard["previous_action_duration"] = previous_actions(
             joint, shard["action_duration"], shard["episode_id"], valid, terminal)
+        shard["previous_joint_action_id"] = shard["previous_expert_action_id"].copy()
         starts = np.flatnonzero(valid & ~np.r_[False, valid[:-1]])
         ends = np.flatnonzero(valid & ~np.r_[valid[1:], False]) + 1
         shard["segments"] = np.column_stack((starts, ends))
@@ -330,6 +333,7 @@ class ReplayStore:
             labels = np.minimum(main, ends[:, None] - 1)
             batches.append({"observation": observation, "burn_lengths": burn_lengths.astype(np.int64),
                             "joint_action_id": shard["joint_action_id"][labels],
+                            "previous_expert_action_id": shard["previous_expert_action_id"][labels],
                             "mask": main < ends[:, None]})
         result = {key: np.concatenate([item[key] for item in batches]) for key in batches[0] if key != "observation"}
         result["observation"] = {key: np.concatenate([item["observation"][key] for item in batches])

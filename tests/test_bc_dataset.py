@@ -68,7 +68,7 @@ class BCDatasetTests(unittest.TestCase):
             np.testing.assert_allclose(store.normalization['state']['mean'], expected)
             cfg = {**config['training'], 'burn_in': 3, 'sequence_length': 10, 'batch_size': 4}
             batch = store.sample(np.random.default_rng(0), cfg)
-            self.assertEqual(set(batch), {'observation', 'burn_lengths', 'joint_action_id', 'mask'})
+            self.assertEqual(set(batch), {'observation', 'burn_lengths', 'joint_action_id', 'mask', 'previous_expert_action_id'})
             self.assertEqual(batch['joint_action_id'].shape, (4, 10))
             self.assertEqual(batch['observation']['state_continuous'].shape, (4, 13, 18))
             self.assertTrue(batch['mask'].any())

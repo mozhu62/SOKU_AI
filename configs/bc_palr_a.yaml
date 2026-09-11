@@ -1,0 +1,57 @@
+seed: 42
+data:
+  # 两个对照配置必须使用同一目录和现有划分；服务器上可同时改为自己的相对路径。
+  directory: data/replay_shards_resources_v4_mirror
+  split_file: data/replay_shards_resources_v4_mirror/train_val_split.json
+  train_fraction: 0.8
+  cache_gb: 32.0
+  vertical_positive_is_down: true
+model:
+  temporal_mode: tcn
+  current_hidden_dim: 256
+  object_hidden_dim: 64
+  object_set_dim: 128
+  temporal_hidden_dim: 256
+  temporal_output_dim: 256
+  fusion_dim: 1024
+  object_embedding_mode: separate
+  skill_embedding_dim: 8
+  previous_action_embedding_dim: 32
+# PALR 对照 A：同一数据、同一初始化与关键帧权重；只改正则。
+palr:
+  enabled: false
+  alpha: 0.1
+  sample_size: 256
+  feature_kernel: rbf
+  action_kernel: categorical
+  regularization: 0.001
+keyframe_weighting:
+  enabled: true
+  # 切换帧权重可改为 1/2/4/8/16；1 或关闭时等价于原等权 BC。
+  changepoint_weight: 16.0
+training:
+  device: auto
+  total_steps: 100000
+  batch_size: 32
+  sequence_length: 32
+  # TCN 的 31 帧上下文不是 GRU no_grad 预热；每个监督帧的感受野严格为 32 帧。
+  burn_in: 31
+  replays_per_batch: 4
+  learning_rate: 0.0001
+  label_smoothing: 0.0
+  max_grad_norm: 10.0
+  weight_decay: 0.0001
+  log_interval: 20
+  save_interval: 1000
+  validation_interval: 1000
+  validation_batches: 20
+  cpu_threads: 4
+  amp: true
+  prefetch_batches: 2
+  frozen_modules: []
+output:
+  directory: outputs/bc_palr_a_joint144
+web:
+  host: 127.0.0.1
+  port: 8796
+  port_attempts: 30

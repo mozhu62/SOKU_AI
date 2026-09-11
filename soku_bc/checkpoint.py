@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from .config import NETWORK_VERSION, MODEL_DEFAULTS, network_version_for
+from .config import NETWORK_VERSION, MODEL_DEFAULTS, network_version_for, palr_settings
 from .models import network_spec
 from .action_space import ACTION_SCHEMA
 from .schema import policy_input_manifest
@@ -48,6 +48,8 @@ def load(path: Path):
     if config_model != model:
         raise ValueError("checkpoint 配置与模型结构清单不一致")
     package["config"]["model"] = config_model
+    # PALR 没有权重；旧同架构 checkpoint 缺少此段时明确恢复为关闭状态。
+    package["config"]["palr"] = palr_settings(package["config"].get("palr"))
     package["spec"] = canonical
     return package
 

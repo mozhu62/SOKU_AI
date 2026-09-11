@@ -132,4 +132,8 @@ npm --prefix web run build
 python scripts/play.py
 ~~~
 
-未代为编译、运行测试、训练或对局；验收源码包含 144 动作往返、旧数据投影、移除资源不影响输入、228D 拼接、流式/批量一致性及旧 checkpoint 拒绝。实际延迟改善尚需用户测量，不能仅凭缩小维度承诺低于一帧。
+网络重构阶段未代为编译、运行测试、训练或对局；验收源码包含 144 动作往返、旧数据投影、移除资源不影响输入、228D 拼接、流式/批量一致性及旧 checkpoint 拒绝。实际延迟改善尚需用户测量，不能仅凭缩小维度承诺低于一帧。
+
+## 可选 PALR 训练正则
+
+后续 PALR 任务保留上述网络与关键帧 CE，新增可选 `L_total = L_keyframe_bc + alpha * HSCIC(TCN_feature, previous_expert | current_expert)`。仅训练取出 `[B,L,256]` 的 TCN 输出；没有新增参数，默认推理接口不变。默认关闭，启用方式、数学来源和该次单元检查/短 benchmark 结果见 [PALR 专项说明](palr.md)。
