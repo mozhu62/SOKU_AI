@@ -24,9 +24,9 @@ class TemporalExperimentTests(unittest.TestCase):
     """仅交付验收源码；按项目要求，本次不自动执行这些测试。"""
 
     def test_tcn_has_two_convolutions_per_block_and_exact_32_frame_receptive_field(self):
-        encoder = TemporalConvEncoder(878, 256, 256).eval()
+        encoder = TemporalConvEncoder(228, 256, 256).eval()
         self.assertTrue(all(hasattr(block, 'conv1') and hasattr(block, 'conv2') for block in encoder.blocks))
-        features = torch.randn(1, 70, 878, requires_grad=True)
+        features = torch.randn(1, 70, 228, requires_grad=True)
         result = encoder(features)
         result[:, 50].square().sum().backward()
         self.assertEqual(features.grad[:, :19].abs().sum().item(), 0)
@@ -62,7 +62,7 @@ class TemporalExperimentTests(unittest.TestCase):
         batch = {
             'observation': tensor_observation(1, 35),
             'burn_lengths': torch.tensor([31]),
-            'joint_action_id': torch.full((1, 4), 192, dtype=torch.long),
+            'joint_action_id': torch.full((1, 4), 64, dtype=torch.long),
             'mask': torch.ones(1, 4, dtype=torch.bool),
         }
         result = learner.train_batch(batch, diagnostics=True)
@@ -82,10 +82,10 @@ class TemporalExperimentTests(unittest.TestCase):
             self.assertEqual(package['network_version'], NETWORK_VERSION)
             checkpoint.restore(package, Learner(config), split)
             old = torch.load(path, weights_only=True)
-            old['network_version'] = 'soku_bc_tcn32_joint432_v1'
-            old['spec']['network_version'] = 'soku_bc_tcn32_joint432_v1'
+            old['network_version'] = 'soku_bc_wide_tcn32_joint432_v2'
+            old['spec']['network_version'] = 'soku_bc_wide_tcn32_joint432_v2'
             torch.save(old, path)
-            with self.assertRaisesRegex(ValueError, '旧权重不允许部分加载'):
+            with self.assertRaisesRegex(ValueError, '旧 Joint432 权重不允许部分加载'):
                 checkpoint.load(path)
 
     def test_fixed_mode_validation_and_comparison_conditions(self):

@@ -18,7 +18,7 @@ class SafeControl:
         self.api = WindowsApi()
         self.keys = {name: parse_virtual_key(key) for name, key in config["keyboard"].items()}
         if len(set(self.keys.values())) != len(self.keys) or 0x79 in self.keys.values():
-            raise ValueError("十个游戏按键必须互不重复，且不能占用 F10")
+            raise ValueError("八个游戏按键必须互不重复，且不能占用 F10")
         self.confirm = parse_virtual_key(config["restart"]["confirm_key"])
         if self.confirm == 0x79:
             raise ValueError("续局键不能使用紧急暂停键 F10")
@@ -114,8 +114,8 @@ class SafeControl:
         with self.lock:
             if not self._ready():
                 return False
-            if direction not in range(1, 10) or len(buttons) != 6 or any(x not in (0, 1) for x in buttons):
-                raise ValueError("实战动作必须是九宫格方向和六个二值按钮")
+            if direction not in range(1, 10) or len(buttons) != 4 or any(x not in (0, 1) for x in buttons):
+                raise ValueError("实战动作必须是九宫格方向和四个二值按钮")
             validate_buttons(buttons, "实际发键")
             # 方向是绝对屏幕坐标，不随朝向翻转；持续相同动作不会重复点按。
             wanted = set()

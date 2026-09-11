@@ -1,12 +1,12 @@
 # 上一帧复制基线与动作切换诊断
 
-这两个指标只增加统计、日志及界面，不参与 CrossEntropy 或 best 选优。当前项目后来已切换到宽 TCN32 网络，因此旧 checkpoint 的兼容性应以 architecture.md 为准；指标定义本身未改变。
+这两个指标只增加统计、日志及界面，不参与 CrossEntropy 或 best 选优。当前项目已切换到 Joint144 / TCN32 网络，因此旧 checkpoint 的兼容性应以 architecture.md 为准；指标定义本身未改变。
 
 ## 定义及实现位置
 
 `action_diagnostics.py` 负责计数和比率定义；`ReplayStore.__init__` 利用现有预读过程对每份分片统计，训练/验证分别合并并缓存到内存。运行时写入既有 `dataset_summary.json`，不向 checkpoint 增加必需字段，也不修改 NPZ。固定数据下不在每个训练 step 重新扫描基线。
 
-全量统计的有效位置从现有 `segments` 还原，与正式 BC 监督标签相同；上一帧专家动作来自原有 `previous_actions()` 的结果，不来自模型输出、不自行向前搜索。仅 previous ID 在 0～431 的位置具有有效历史，START/PAD=432、episode 起点、终局/断帧后的片段起点均被排除。真实片段中途开始的随机采样序列，如果具有真实上一帧，则保留其历史。
+全量统计的有效位置从现有 `segments` 还原，与正式 BC 监督标签相同；上一帧专家动作来自原有 `previous_actions()` 的结果，不来自模型输出、不自行向前搜索。仅 previous ID 在 0～143 的位置具有有效历史，START/PAD=144、episode 起点、终局/断帧后的片段起点均被排除。真实片段中途开始的随机采样序列，如果具有真实上一帧，则保留其历史。
 
 设 N 为正式指标统计的全部有效帧，H 为其中具有真实上一帧的帧，K 为 H 中当前动作等于上一帧的数量，C 为 H 中动作发生变化的数量：
 
@@ -43,7 +43,7 @@ H=0 时复制基线显示未记录；C=0 时切换准确率显示未记录，不
 | train/val_action_change_samples、action_change_correct、action_change_top5_correct | C 及正确分子，便于审计合并 |
 | action_diagnostics_version | bc_action_history_diagnostics_v1 |
 
-旧日志没有这些指标，不反推、不补零。更新代码并重启续训后开始产生新记录；按既有规则暂停后点“验证”可以记录当前模型结果，不需要重新训练网络。
+旧日志没有这些指标，不反推、不补零。同版本模型重启后开始产生新记录；按既有规则暂停后点“验证”可以记录当前模型结果。旧 Joint432 模型不能用于当前 Joint144 网络，必须从零训练。
 
 ## 前端
 
@@ -52,7 +52,9 @@ H=0 时复制基线显示未记录；C=0 时切换准确率显示未记录，不
 - 最近验证记录增加复制基线、切换 Top-1/Top-5、切换帧数和占比。
 - 学习诊断增加训练/验证切换指标和训练切换趋势；数据页展示训练/验证全量分子、分母。
 
-## 本机实际只读统计（2026-09-09）
+## 历史 Joint432 只读统计（2026-09-09，不适用于当前 Joint144）
+
+以下数值保留作历史记录。当前已移除卡牌动作，复制基线和切换帧定义须由 Joint144 数据预读重新计算；本次未运行统计，不提供伪造的新数值。
 
 数据：`soku_cql/data/replay_shards_resources_v4_mirror`；使用其中已有 `train_val_split.json`，没有生成新划分。
 

@@ -5,7 +5,7 @@ import numpy as np
 from ..schema import STATE_CONTINUOUS_FEATURES, STATE_CATEGORICAL_FEATURES
 from .resources import build_resources
 from .input_history import ControllerHistory
-from ..resources import normalization_arrays, normalize_resources
+from ..resources import normalization_arrays
 from ..action_space import ACTION_SCHEMA
 
 
@@ -31,7 +31,7 @@ class ObservationBuilder:
         sign = lambda x: (x > 0) - (x < 0)
         direction = 5 + sign(int(player.inputHorizontal)) - 3 * sign(int(player.inputVertical)) * (1 if self.positive_down else -1)
         buttons = [int(getattr(player, key) > 0) for key in
-                   ("inputA", "inputD", "inputB", "inputC", "inputChangeCard", "inputSpellCard")]
+                   ("inputA", "inputD", "inputB", "inputC")]
         self.history.observe((int(payload.gameProcessId), int(payload.currentRound), int(payload.battleFrame)),
                              direction, buttons)
 
@@ -103,5 +103,5 @@ class ObservationBuilder:
             50 <= player.action < 150, flag(player, 2), 50 <= opponent.action < 150, flag(opponent, 2),
         ], np.float32)
         values, self.resource_summary = build_resources(payload, resources, self.side)
-        result.update(normalize_resources(values, self.norm))
+        result.update(values)
         return result

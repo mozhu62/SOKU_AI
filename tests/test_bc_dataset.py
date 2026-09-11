@@ -5,16 +5,22 @@ from pathlib import Path
 
 import numpy as np
 
-from soku_bc.action_space import encode, decode, previous_actions, START_ACTION_ID
+from soku_bc.action_space import encode, decode, previous_actions, START_ACTION_ID, ACTION_COUNT, to_controller, from_controller
 from soku_bc.config import DEFAULTS
 from soku_bc.dataset import read_shard, ReplayStore, split_replays
 from tests.fixtures import raw_shard
 
 
 class BCDatasetTests(unittest.TestCase):
-    def test_all_432_actions_round_trip(self):
-        ids = np.arange(432)
+    def test_all_144_actions_round_trip(self):
+        ids = np.arange(144)
         np.testing.assert_array_equal(encode(*decode(ids)), ids)
+        direction, buttons = to_controller(ids)
+        self.assertEqual(buttons.shape, (ACTION_COUNT, 4))
+        np.testing.assert_array_equal(from_controller(direction, buttons), ids)
+        for invalid in (-1, ACTION_COUNT):
+            with self.assertRaises(ValueError):
+                decode(invalid)
 
     def test_previous_action_shift_and_boundaries(self):
         actions = np.arange(6)
@@ -35,8 +41,10 @@ class BCDatasetTests(unittest.TestCase):
             shard = read_shard(path, True)
             self.assertNotIn('rewards', shard)
             self.assertNotIn('terminated', shard)
-            self.assertEqual(shard['joint_action_id'][1], encode(5, 0, 2))
-            self.assertEqual(shard['previous_joint_action_id'][2], encode(5, 0, 2))
+            self.assertEqual(shard['joint_action_id'][1], encode(5, 0))
+            self.assertEqual(shard['previous_joint_action_id'][2], encode(5, 0))
+            self.assertEqual(shard['card_input_ignored_rows'], 1)
+            self.assertEqual(len(shard['joint_action_id']), len(raw['episode_id']))
             self.assertEqual(path.read_bytes(), before)
             raw.pop('rewards')
             np.savez(path, **raw)

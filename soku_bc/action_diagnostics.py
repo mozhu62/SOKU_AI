@@ -5,7 +5,7 @@ import numpy as np
 from .action_space import ACTION_COUNT
 
 
-DIAGNOSTIC_VERSION = "bc_action_history_diagnostics_v1"
+DIAGNOSTIC_VERSION = "bc_joint144_action_history_diagnostics_v1"
 DATA_COUNT_KEYS = ("valid_samples", "previous_action_samples", "previous_action_copy_correct", "action_change_samples")
 BATCH_COUNT_KEYS = ("previous_action_samples", "previous_action_copy_correct", "action_change_samples",
                     "action_change_correct", "action_change_top5_correct", "history_joint_correct")
@@ -26,7 +26,7 @@ def dataset_action_counts(expert, previous, valid):
     expert, previous, valid = np.asarray(expert), np.asarray(previous), np.asarray(valid, dtype=bool)
     if expert.shape != previous.shape or expert.shape != valid.shape:
         raise ValueError("动作历史诊断的标签、上一帧动作和有效位置形状不一致")
-    # 历史边界由原有 previous_actions 标成 432；排除所有非真实 Joint Action token。
+    # 历史边界由原有 previous_actions 标成 144；排除所有非真实 Joint Action token。
     eligible = valid & (previous >= 0) & (previous < ACTION_COUNT)
     same = expert == previous
     return {"valid_samples": int(valid.sum()), "previous_action_samples": int(eligible.sum()),

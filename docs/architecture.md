@@ -1,161 +1,135 @@
-# BC 宽 TCN32 网络与训练口径
+# BC Joint144 / TCN32 网络与训练说明
 
-## 1. 设计目标
+## 1. 本次实验边界
 
-当前版本不再在时序结构上保留两套路线。网络只保留一条简单、宽且可直接解释的路径：
+直接修改当前 BC，不创建 Git 分支，也不迁移旧权重。网络版本为 soku_bc_tcn32_joint144_v1。
 
-- 当前状态不再先压缩为 256D，而是由 878D 单层映射到 1024D。
-- GRU 和旧 Memory Fusion 完全删除。
-- TCN 位于状态输入顶部，独立读取连续 32 帧 878D 状态。
-- 两侧对象仍各自编码为 128D，每侧最多 3 个对象。
-- 四路特征拼成 1536D，经一层 1024D 融合后直接输出 432 类 logits。
+删除双方卡牌全部输入、技能学习等级及生效等级；保留双方四个技能槽的必杀类型及有效 mask。输出去掉切卡和用卡，由 Joint432 改为 Joint144。当前状态编码由原来的 878→1024 改成 228→256。
 
-网络版本为 soku_bc_wide_tcn32_joint432_v2。
+不改变对象数量、对象截断规则、TCN 感受野、关键帧加权损失、优化器超参数、数据划分、采样规则、动作对齐及 checkpoint 选优规则。模型不含 GRU、Q/TD、奖励、Actor/Critic 或宏动作。
 
-## 2. 每帧 878D 状态
+## 2. 当前状态输入：228D
 
-878D 是经过必要类别 embedding 和资源展开后的实际网络输入宽度，不是 878 个原始标量字段：
+这里的维度指类别经过 embedding 后拼接的状态向量，不是 228 个原始字段。对象分支独立计算，不算在 228D 内。
 
-| 组成 | 维度 |
+| 输入组 | 展开维度 |
 |---|---:|
-| 双方基础连续状态 | 18 |
-| 战术语义状态 | 9 |
-| 双方 action / action block 与天气 embedding | 88 |
-| 双方 Skill、手牌、卡槽和灵力资源编码 | 722 |
-| 上一帧真实 Joint Action embedding | 32 |
+| 双方位置、速度、绝对朝向、当前灵力、动作帧、相对位置、双方 HP 等连续状态 | 18 |
+| 双方防御/擦弹/受击/空中状态、对方弹幕攻击有效标志 | 9 |
+| 双方 action embedding：2×32 | 64 |
+| 双方 action_block embedding：2×8 | 16 |
+| active_weather embedding | 8 |
+| 双方四槽技能类型：2×4×(variant embedding 8 + mask 1) | 72 |
+| 上一帧真实 Joint144 动作 embedding | 32 |
 | 上一帧方向组合持续时间 | 1 |
-| 可选状态数值 | 4 |
-| 可选状态有效 mask | 4 |
-| 合计 | 878 |
+| 双方 max_spirit、hitstop 数值及各自有效 mask | 8 |
+| 合计 | **228** |
 
-CurrentStateEncoder 先调用 features() 形成该 878D 向量。当前帧分支与 TCN 历史分支复用同一份 878D 表示，避免两套字段定义漂移。
+移除量：卡牌相关 586D，加上技能学习/生效等级 embedding 64D；878−586−64=228D。
 
-上一帧动作仍使用 433 项 embedding：0～431 是真实 Joint Action，432 是 START/PAD。当前帧标签 action[t] 不会进入 observation[t]。
+技能槽在网络内部称 skill_slot_1～4，按槽位拼接；同一槽双方共享类型 embedding。原始 variant 0/1/2 编为 token 1/2/3，token 0 表示未知。每侧 skill_categorical 与 skill_mask 均为 [...,4]。
 
-## 3. 当前帧宽编码
+上一帧动作词表为 145×32：真实动作 0～143，START/PAD=144。observation[t] 只使用真实 action[t−1]。回合/连续片段起点不从上一段寻找历史；采样切片中途仍使用原始轨迹的真实前一帧。
 
-当前帧分支只有一层：
+duration 仍指方向水平/垂直组合的持续帧数，不是完整按键组合持续时间；输入 clip(duration[t−1],0,60)/60，边界为 0。
 
-~~~text
-878 → Linear(878,1024) → LayerNorm(1024) → SiLU → 1024D
-~~~
-
-这里的 1024D 是学习得到的隐藏表示宽度。它不会增加原始观测信息，也不是状态字段从 878 项扩展到 1024 项；它只给 BC 更多通道组合已有状态。
-
-## 4. 独立 TCN32 历史分支
-
-TCN 输入为：
+## 3. 四路编码与最终输出
 
 ~~~text
-[batch, time, 878]
+当前帧状态 228D ─ Linear(228,256) + LayerNorm + SiLU ─ 256D ┐
+连续32帧状态    ─ 独立 TCN32 ───────────────────────── 256D ┤
+己方最多3对象   ─ Object Encoder + masked mean/max ─── 128D ┤
+对方最多3对象   ─ Object Encoder + masked mean/max ─── 128D ┘
+                              concat 768D
+                                   ↓
+                   Linear(768,1024) + LayerNorm + SiLU
+                                   ↓
+                          Linear(1024,144)
+                                   ↓
+                       原始 logits [batch,length,144]
 ~~~
 
-先逐帧投影到 256D，然后执行：
+本次只缩小 Current Encoder，不把最终融合层也改成 256D；融合层隐藏宽度仍为 1024D。
 
-1. 一个 kernel=2 的因果 stem。
-2. 四个因果残差块，dilation 为 1、2、4、8。
-3. 每个残差块包含两层 kernel=2 的因果卷积。
-4. 每层只左侧补零，不读取未来帧。
-5. LayerNorm 只作用于同一帧的 256 个通道，不跨时间统计。
-6. padding 帧在每层后重新乘 mask，防止卷积偏置制造伪历史。
+### TCN32
 
-感受野按历史间隔计算：
+输入 [B,T,228]，独立投影 Linear(228,256)+LayerNorm+SiLU。因果 stem 使用 kernel=2、dilation=1；四个残差块使用 dilation=1/2/4/8，每块两层 kernel=2 因果卷积，通道宽度 256，整体感受野恰好为当前帧加前 31 帧。
+
+TCN 直接读取历史状态向量，不读取 Current Encoder 的输出，也不加入历史对象。删除卡牌和等级同时影响当前分支与历史分支，不存在从缓存继续输入这些量的路径。
+
+### 对象分支
+
+每侧最多 3 个对象，不改选择规则。每对象输入 8 个数值 + action embedding 32D + action_block embedding 8D，共 48D。对象 MLP 为 48→64→64，含 LayerNorm 和 SiLU；masked mean 64D 与 masked max 64D 拼成每侧 128D。无效对象按 mask 排除。
+
+## 4. 单帧动作编码
+
+Joint144 = 9 个绝对九宫格方向 × 16 个 ABCD 组合。固定战斗 bit 顺序为 A、D、B、C，即体术、Dash、轻弹幕、重弹幕。
 
 ~~~text
-stem:                         1
-双卷积残差块: 2 × (1+2+4+8) = 30
-总历史间隔:                   31
-覆盖帧数: 当前帧 + 前 31 帧 = 32
+joint_action_id = (direction - 1) * 16 + combat_mask
+direction = joint_action_id // 16 + 1
+combat_mask = joint_action_id % 16
 ~~~
 
-因此每个输出严格只依赖 32 帧窗口。TCN 输出为 256D，不进行跨整段平均池化，也不会跨 episode、终局或断帧拼接。
+范围 0～143；5+无按钮是 ID 64。例如 6+D+A 是一次同时按下的控制状态，不是宏动作。模型不能发出切卡或使用符卡。
 
-## 5. 对象分支
+forward 返回原始 logits，无 softmax/sigmoid/temperature；训练 CE 接收 logits，推理 argmax 后解码为方向与四个战斗按钮。页面的 softmax 概率仅用于诊断，不代表胜率。
 
-对象结构保持不变。每侧最多读取离角色最近的 3 个对象；每个对象由 8 个连续字段、action embedding 和 action block embedding 组成，经共享对象 MLP 得到 64D：
+## 5. 数据兼容与训练
+
+既有 v4 NPZ 保留六列原始按键与完整资源元数据，源文件及固定 split hash 不修改，也不需要重新录制。
+
+ReplayStore 加载时：
+
+1. 跳过卡牌及技能等级数组的读取、解压和归一化。
+2. 验证技能类型和有效 mask，只将 ABCD 四列投影为 Joint144 标签，不删帧。
+3. 若存在旧 Joint432 标签，只用于核对原始数据，不当作新的训练标签。
+4. 在投影后构造上一帧动作，再采样序列，防止当前帧标签泄漏。
+5. 重新统计 Joint144 的多数动作基线、复制基线和切换帧；卡牌独有变化成为 hold。
+
+已有离线镜像 NPZ 仍使用其真实镜像后轴输入，因此当前动作和历史动作使用相同坐标约定；本次没有新增或变更镜像流程。
+
+保留每批 32 段、31 帧前导 + 32 帧监督、训练集拟合 normalization、AMP、预取、学习率等现有设置。前导不产生独立 CE，但可接收后续监督通过 TCN 回传的梯度。
 
 ~~~text
-每对象 48D → 64D → 64D
-masked mean 64D + masked max 64D = 每侧 128D
+w[t] = changepoint_weight（真实连续历史存在且 Joint144 标签发生改变）
+       1（其他帧）
+loss = sum(CE[t] × w[t] × valid[t]) / sum(w[t] × valid[t])
 ~~~
 
-己方与敌方的类别 embedding 按配置使用 separate 模式。空集合返回 128D 零向量。
+YAML 中关键帧权重仍为 4。验证 NLL、Top-1、Top-5 等按有效监督帧等权统计，best.pt 仍按当前阶段最低验证 NLL 选择。新增/保留的分组诊断不参加反向传播。
 
-## 6. 最终融合与输出
+注意：忽略卡牌输入/输出不等于把原来的 REP 改成“双方没有用过卡”的对局。卡牌造成的技能替换、伤害或其他世界状态变化仍保留；本实验是不让模型观测和控制卡牌，并非重写游戏规则。
+
+## 6. 推理、日志与兼容性
+
+训练和推理共享动作编码、技能类型处理及 normalization schema。LiveFrames.v1 和 ctypes 布局保持不变，不需为这次网络实验重新构建 DLL。模型只消费同帧技能类型，不读取等级和卡牌。
+
+推理继续要求真实连续 32 帧；缺帧、换局、模型切换按既有规则重置。保留 F10、失焦松键、看门狗、观测过期检查及自动续局。
+
+诊断改为 144 类频率、Neutral=64、方向准确率和四按钮组合准确率，删除卡牌命令准确率。归一化熵除以 log(144)，均匀预测 NLL 约 4.97。旧 Joint432 的准确率、复制基线及 NLL 不能直接当成当前口径。
+
+旧 checkpoint 明确拒绝训练和推理加载，不部分迁移。新版本默认输出 outputs/bc_suika_tcn32_joint144，原模型和日志保留不覆盖。所有保留参数重新随机初始化。
+
+## 7. 启动与验收
+
+在 soku_bc 目录从零开始：
 
 ~~~text
-当前状态             1024D
-TCN32 历史            256D
-己方对象              128D
-敌方对象              128D
-                     ─────
-拼接                  1536D
-
-1536 → Linear(1536,1024) → LayerNorm → SiLU
-1024 → Linear(1024,432) → 原始 logits
+python scripts/train.py --config configs/bc_suika_tcn32.yaml --start
 ~~~
 
-输出端没有 softmax、sigmoid 或 temperature。训练时 CrossEntropy 直接接收 logits；实战推理时对 432 类取 argmax，再 decode 为完整 Controller State。
-
-## 7. 序列训练
-
-默认每个样本读取 31 帧前导上下文和 32 帧监督片段：
+不要带旧模型的 --resume。新版本续训：
 
 ~~~text
-[31 帧历史] + [32 帧带标签片段]
+python scripts/train.py --config configs/bc_suika_tcn32.yaml --resume outputs/bc_suika_tcn32_joint144/last.pt
 ~~~
 
-- 前导帧不单独产生 CrossEntropy。
-- 后续监督帧的梯度可以通过因果卷积回传到其真实历史输入及 embedding。
-- 短 episode 的前导先按真实长度左对齐，缺失位置使用 mask。
-- CE 只统计 Dataset mask 标记的有效监督位置。
-- horizontal mirror augmentation、固定 8:2 split、normalization、Joint432 标签和 best checkpoint 规则保持不变。
-
-每帧仍计算 CrossEntropy，归约改为关键帧加权平均：
+网页源码有改动，用户需自行构建后重启服务：
 
 ~~~text
-CE[t] = CrossEntropy(logits[t], expert_joint_action_id[t])
-w[t] = changepoint_weight（有真实连续历史且动作发生变化）；其他帧为 1
-loss = sum(CE[t] * w[t] * valid[t]) / sum(w[t] * valid[t])
+npm --prefix web run build
+python scripts/play.py
 ~~~
 
-keyframe_weighting.enabled=false 或 changepoint_weight=1 时恢复等权 BC。
-默认训练 YAML 开启权重 4；旧配置缺少该段时保持关闭。验证的总体 NLL/Top-1/Top-5、等权 CE 和 best 选优口径不变，详见 [关键帧说明](keyframe_weighting.md)。
-
-不存在奖励、TD、N-step、Q value、目标网络、PPO、GAE 或额外辅助损失。
-
-## 8. 冻结与诊断
-
-可冻结模块现在只有：
-
-- current_encoder
-- object_encoder
-- tcn
-- fusion
-- policy_head
-
-冻结通过 requires_grad=False 实现，并清除残留梯度。模块梯度范数和单次更新参数变化量继续写入诊断日志。不存在 gru 或 memory_fusion 模块，也不存在“冻结但仍旁路”的特殊模式。
-
-## 9. Checkpoint 兼容性
-
-当前 checkpoint 必须同时满足：
-
-- algorithm 为 bc；
-- network_version 为 soku_bc_wide_tcn32_joint432_v2；
-- observation manifest 与 Joint432 schema 一致；
-- current、temporal 和 fusion 结构清单一致；
-- state_dict 严格加载。
-
-旧 GRU 与旧 256D TCN 的输入宽度、参数名和前向语义均不同，因此明确拒绝续训和推理，不进行部分迁移。
-
-## 10. 实战推理
-
-实战端从 LiveFrames.v1 队列按游戏帧积累连续观测：
-
-- 窗口不足 32 帧时不执行模型、不发键。
-- 每个新游戏帧只构造并缓存 878D 状态表示。
-- TCN 读取完整 32 帧；对象编码器只读取当前帧对象。
-- 换局、帧号回退、真实缺帧或协议断开时清空窗口。
-- 输出仍为 [1,432] logits，完整方向和 ABCD/切卡/用卡按钮一起解码执行。
-
-本次仅交付源码与静态文档，没有编译、运行测试、启动训练或进行实战。
+未代为编译、运行测试、训练或对局；验收源码包含 144 动作往返、旧数据投影、移除资源不影响输入、228D 拼接、流式/批量一致性及旧 checkpoint 拒绝。实际延迟改善尚需用户测量，不能仅凭缩小维度承诺低于一帧。

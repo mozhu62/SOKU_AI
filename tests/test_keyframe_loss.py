@@ -54,7 +54,7 @@ class ChangepointMaskTests(unittest.TestCase):
         self.assertTrue(eligible.all())
 
     def test_supervised_history_skips_burn_in_without_losing_first_frame(self):
-        batch = {"observation": {"previous_joint_action_id": torch.tensor([[432, 10, 10, 20, 20]])},
+        batch = {"observation": {"previous_joint_action_id": torch.tensor([[144, 10, 10, 20, 20]])},
                  "mask": torch.tensor([[True, True, False]])}
         previous = supervised_previous_actions(batch, 2)
         changed, eligible = build_changepoint_mask(torch.tensor([[20, 20, -999]]), batch["mask"], previous)
@@ -65,7 +65,7 @@ class ChangepointMaskTests(unittest.TestCase):
     def test_shape_dtype_and_padding_tokens(self):
         actions = torch.tensor([[10, 20, -999]])
         mask = torch.tensor([[True, True, False]])
-        changed, eligible = build_changepoint_mask(actions, mask, torch.tensor([[432, -1, 20]]))
+        changed, eligible = build_changepoint_mask(actions, mask, torch.tensor([[144, -1, 20]]))
         self.assertFalse(changed.any())
         self.assertFalse(eligible.any())
         with self.assertRaisesRegex(ValueError, "同形状"):
@@ -77,10 +77,10 @@ class ChangepointMaskTests(unittest.TestCase):
 class KeyframeLossTests(unittest.TestCase):
     def test_requested_weighted_reduction_is_1_point_8(self):
         labels = torch.tensor([[10, 20]])
-        probabilities = torch.empty(1, 2, 432)
+        probabilities = torch.empty(1, 2, 144)
         for index, ce in enumerate((1., 2.)):
             probability = math.exp(-ce)
-            probabilities[0, index].fill_((1. - probability) / 431)
+            probabilities[0, index].fill_((1. - probability) / 143)
             probabilities[0, index, labels[0, index]] = probability
         loss, parts = classification_parts(
             probabilities.log(), labels, torch.ones_like(labels, dtype=torch.bool),
@@ -93,9 +93,9 @@ class KeyframeLossTests(unittest.TestCase):
 
     def test_weight_one_and_disabled_match_old_loss_and_gradients(self):
         generator = torch.Generator().manual_seed(27)
-        original = torch.randn(2, 5, 432, generator=generator)
+        original = torch.randn(2, 5, 144, generator=generator)
         labels = torch.tensor([[10, 10, 20, -999, -999], [5, 8, 8, 9, 10]])
-        previous = torch.tensor([[432, 10, 10, 20, 432], [4, 5, 8, 8, 9]])
+        previous = torch.tensor([[144, 10, 10, 20, 144], [4, 5, 8, 8, 9]])
         mask = labels >= 0
         for smoothing in (0., .1, .2):
             for settings in ({"enabled": True, "changepoint_weight": 1},
@@ -115,9 +115,9 @@ class KeyframeLossTests(unittest.TestCase):
 
     def test_weighted_gradient_shapes_invalid_nan_and_boundary_frames(self):
         labels = torch.tensor([[10, 20, -999], [30, 30, 40]])
-        previous = torch.tensor([[432, 10, 20], [432, 30, 30]])
+        previous = torch.tensor([[144, 10, 20], [144, 30, 30]])
         mask = labels >= 0
-        original = torch.randn(2, 3, 432, generator=torch.Generator().manual_seed(42))
+        original = torch.randn(2, 3, 144, generator=torch.Generator().manual_seed(42))
         original[~mask] = float("nan")
         for weight in (1, 2, 4, 8, 16):
             with self.subTest(weight=weight):
@@ -140,7 +140,7 @@ class KeyframeLossTests(unittest.TestCase):
                 self.assertEqual(logits.grad[~mask].abs().sum().item(), 0.)
 
     def test_missing_history_and_empty_supervision(self):
-        logits = torch.zeros(1, 2, 432)
+        logits = torch.zeros(1, 2, 144)
         labels = torch.tensor([[10, 20]])
         with self.assertRaisesRegex(ValueError, "真实上一帧"):
             classification_parts(logits, labels, torch.ones_like(labels, dtype=torch.bool),
@@ -151,9 +151,9 @@ class KeyframeLossTests(unittest.TestCase):
 
 class KeyframeMetricTests(unittest.TestCase):
     def test_partition_metrics_and_unweighted_overall_metrics(self):
-        logits = torch.full((1, 6, 432), -8.)
+        logits = torch.full((1, 6, 144), -8.)
         labels = torch.tensor([[10, 10, 20, 20, 5, -999]])
-        previous = torch.tensor([[432, 10, 10, 20, 20, 9]])
+        previous = torch.tensor([[144, 10, 10, 20, 20, 9]])
         mask = labels >= 0
         logits[0, torch.arange(6), torch.tensor([10, 10, 10, 5, 5, 0])] = 5.
         logits[0, 2, 20] = 4.  # 一个切换帧 Top-1 错，但真实动作仍在 Top-5。
@@ -178,9 +178,9 @@ class KeyframeMetricTests(unittest.TestCase):
             self.assertEqual(prefixed[f"val_{key}"], after[key])
 
     def test_partition_aggregation_uses_group_denominators(self):
-        logits = torch.randn(1, 6, 432, generator=torch.Generator().manual_seed(9))
+        logits = torch.randn(1, 6, 144, generator=torch.Generator().manual_seed(9))
         labels = torch.tensor([[10, 10, 20, 20, 5, 30]])
-        previous = torch.tensor([[432, 10, 10, 20, 20, 432]])
+        previous = torch.tensor([[144, 10, 10, 20, 20, 144]])
         mask = torch.ones_like(labels, dtype=torch.bool)
         _, parts = classification_parts(logits, labels, mask, previous_joint_action_id=previous)
         expected = classification_metrics(parts)
@@ -208,8 +208,8 @@ class KeyframeMetricTests(unittest.TestCase):
         learner.config["keyframe_weighting"] = {"enabled": True, "changepoint_weight": 8}
         learner.model, learner.device, learner.amp = FixedNetwork(), torch.device("cpu"), False
         batch = {"observation": {
-                    "test_logits": torch.randn(1, 5, 432, generator=torch.Generator().manual_seed(2)),
-                    "previous_joint_action_id": torch.tensor([[432, 10, 10, 10, 432]])},
+                    "test_logits": torch.randn(1, 5, 144, generator=torch.Generator().manual_seed(2)),
+                    "previous_joint_action_id": torch.tensor([[144, 10, 10, 10, 144]])},
                  "joint_action_id": torch.tensor([[10, 20, 30]]), "mask": torch.ones(1, 3, dtype=torch.bool),
                  "burn_lengths": torch.tensor([2])}
         loss, parts = learner.losses(batch)

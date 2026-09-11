@@ -22,7 +22,7 @@ export function Overview({state}:{state:Row}){
     <progress className="run-progress" aria-label="训练完成比例" max={total||1} value={state.step||0}/>
     {(train.error||validation.error)&&<p className="error">{train.error||validation.error}</p>}
     <div className="two-columns">
-      <Trend title="训练与验证的模仿误差" rows={merged} series={[{key:'train_nll',name:'训练 NLL',color:'#42d6b0'},{key:'val_nll',name:'验证 NLL',color:'#70a7ff'}]} note="NLL 为未平滑交叉熵；越低表示给予专家动作的概率越高。均匀预测约为 6.07"/>
+      <Trend title="训练与验证的模仿误差" rows={merged} series={[{key:'train_nll',name:'训练 NLL',color:'#42d6b0'},{key:'val_nll',name:'验证 NLL',color:'#70a7ff'}]} note="NLL 为未平滑交叉熵；越低表示给予专家动作的概率越高。144 类均匀预测 NLL 约为 4.97"/>
       <Trend title="验证动作一致率" rows={validation.rows} series={[{key:'joint_accuracy',name:'Top-1',color:'#42d6b0'},{key:'joint_top5',name:'Top-5',color:'#70a7ff'},{key:'majority_baseline_accuracy',name:'多数动作基线',color:'#edbf6e'},{key:'val_previous_action_baseline',name:'上一帧复制基线（全量）',color:'#b7a4ed',connectNulls:false},{key:'val_action_change_accuracy',name:'切换帧 Top-1',color:'#f38caa',connectNulls:false}]} note="总体一致率与真正改变操作的能力分开观察；全量基线和本次验证抽样范围见下方"/>
     </div>
     <ActionHistoryPanel state={state}/>

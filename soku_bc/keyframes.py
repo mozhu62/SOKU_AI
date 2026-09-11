@@ -15,7 +15,7 @@ def build_changepoint_mask(expert_actions, valid_mask, previous_expert_actions):
         raise ValueError("关键帧动作必须为 int64，有效 mask 必须为 bool")
     if expert_actions.device != valid_mask.device or previous_expert_actions.device != expert_actions.device:
         raise ValueError("关键帧标签、有效 mask 和真实历史必须位于同一设备")
-    # episode/终局/断帧边界已由 previous_actions 标成 START=432。
+    # episode/终局/断帧边界已由 previous_actions 标成 START=144。
     # 切片首帧若带有合法历史则照常比较；无历史的有效帧仍参与普通 CE。
     changepoint_valid_mask = valid_mask & (previous_expert_actions >= 0) & (previous_expert_actions < ACTION_COUNT)
     is_changepoint = changepoint_valid_mask & (expert_actions != previous_expert_actions)

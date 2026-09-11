@@ -5,14 +5,14 @@ from functools import lru_cache
 import numpy as np
 
 
-ACTION_SCHEMA = "soku_controller_joint432_v1"
-ACTION_COUNT = 432
-START_ACTION_ID = 432
-PREVIOUS_ACTION_VOCAB = 433
-NEUTRAL_ACTION_ID = 192
+ACTION_SCHEMA = "soku_controller_joint144_v1"
+ACTION_COUNT = 144
+START_ACTION_ID = 144
+PREVIOUS_ACTION_VOCAB = 145
+NEUTRAL_ACTION_ID = 64
 COMBAT_BUTTONS = ("melee", "dash", "light_projectile", "heavy_projectile")
-CARD_COMMANDS = ("NONE", "CHANGE_CARD", "USE_CARD")
-CARD_OVERLAP_POLICY = "prefer_use_card_v1"
+RAW_ACTION_SCHEMA = "soku_controller_joint432_v1"
+RAW_CARD_PROJECTION = "ignore_card_buttons_v1"
 
 
 def _integer(value, name, low, high):
@@ -23,56 +23,41 @@ def _integer(value, name, low, high):
     return array.astype(np.int64, copy=False)
 
 
-def encode(direction, combat_mask, card_command):
-    """一个 ID 对应单游戏帧的完整控制器状态，方向始终是屏幕绝对九宫格。"""
+def encode(direction, combat_mask):
+    """一个 ID 对应单游戏帧的方向和四个战斗按钮状态（不包含卡牌），方向始终是屏幕绝对九宫格。"""
     direction = _integer(direction, "direction", 1, 9)
     combat = _integer(combat_mask, "combat_mask", 0, 15)
-    card = _integer(card_command, "card_command", 0, 2)
-    result = (direction - 1) * 48 + combat * 3 + card
+    result = (direction - 1) * 16 + combat
     return int(result) if result.ndim == 0 else result
 
 
 def decode(joint_action_id):
     value = _integer(joint_action_id, "joint_action_id", 0, ACTION_COUNT - 1)
-    result = (value // 48 + 1, (value % 48) // 3, value % 3)
+    result = (value // 16 + 1, value % 16)
     return tuple(int(x) for x in result) if value.ndim == 0 else result
 
 
-def _binary_buttons(buttons, context):
-    values = np.asarray(buttons)
-    if values.ndim < 1 or values.shape[-1] != 6 or not np.isin(values, [0, 1]).all():
-        raise ValueError(f"action schema 不兼容：{context} 按钮必须是六列 0/1")
-    return values
-
-
-def clean_card_overlap(buttons, context=""):
-    """按约定保留用卡、清除重合切卡；返回清洗结果和逐行标记，不改写调用者的原始数组。"""
-    values = _binary_buttons(buttons, context)
-    overlap = (values[..., 4] == 1) & (values[..., 5] == 1)
-    if np.any(overlap):
-        values = values.copy()
-        values[..., 4] = np.where(overlap, 0, values[..., 4])
-    return values, overlap
-
-
 def validate_buttons(buttons, context=""):
-    """发键前严格检查输出；数据导入与实际输入回读使用 clean_card_overlap。"""
-    values = _binary_buttons(buttons, context)
-    conflict = (values[..., 4] == 1) & (values[..., 5] == 1)
-    if np.any(conflict):
-        positions = np.argwhere(conflict).tolist()[:8]
-        raise ValueError(f"action schema 不兼容：{context} 同帧 CHANGE_CARD 与 USE_CARD 同时为 1，"
-                         f"位置={positions}；发键输出必须是清洗后的互斥卡命令")
+    values = np.asarray(buttons)
+    if values.ndim < 1 or values.shape[-1] != 4 or not np.isin(values, [0, 1]).all():
+        raise ValueError(f"action schema 不兼容：{context} 战斗按钮必须是 A/D/B/C 四列 0/1")
     return values.astype(np.int64, copy=False)
 
 
+def project_raw_buttons(buttons, context=""):
+    """仅在旧 NPZ 导入边界投影六列按键；保留所有帧，不回写源文件。"""
+    values = np.asarray(buttons)
+    if values.ndim < 1 or values.shape[-1] != 6 or not np.isin(values, [0, 1]).all():
+        raise ValueError(f"原始数据不兼容：{context} v4 按钮必须是六列 0/1")
+    ignored = np.any(values[..., 4:] != 0, axis=-1)
+    return values[..., :4].astype(np.int64), ignored
+
+
 def from_controller(direction, buttons, context=""):
-    # 离线标签与实战回读共用清洗规则，上一帧动作也由清洗后的完整输入生成。
-    values, _ = clean_card_overlap(buttons, context)
-    values = values.astype(np.int64, copy=False)
-    # 固定 bit 顺序 A、D、B、C；切卡和用卡不是战斗 bit，而是互斥三分类。
-    combat = (values[..., :4] * np.asarray([1, 2, 4, 8])).sum(-1)
-    return encode(direction, combat, values[..., 4] + 2 * values[..., 5])
+    values = validate_buttons(buttons, context)
+    # 固定 bit 顺序 A、D、B、C；推理接口不再接收或产生卡牌命令。
+    combat = (values * np.asarray([1, 2, 4, 8])).sum(-1)
+    return encode(direction, combat)
 
 
 def from_raw_axes(horizontal, vertical, buttons, positive_down=True, context=""):
@@ -83,18 +68,16 @@ def from_raw_axes(horizontal, vertical, buttons, positive_down=True, context="")
 
 
 def to_controller(joint_action_id):
-    direction, combat, card = decode(joint_action_id)
-    combat, card = np.asarray(combat), np.asarray(card)
-    buttons = np.stack([*((combat >> bit) & 1 for bit in range(4)), card == 1, card == 2], -1)
+    direction, combat = decode(joint_action_id)
+    combat = np.asarray(combat)
+    buttons = np.stack([(combat >> bit) & 1 for bit in range(4)], -1)
     return direction, buttons.astype(np.int64)
 
 
 def action_name(joint_action_id):
-    direction, combat, card = decode(joint_action_id)
+    direction, combat = decode(joint_action_id)
     # 展示顺序 D+A+B+C 不改变存储 bit 顺序，6+D+A 表示同帧同时按下。
     names = [name for bit, name in ((1, "D"), (0, "A"), (2, "B"), (3, "C")) if combat & (1 << bit)]
-    if card:
-        names.append(CARD_COMMANDS[card])
     return "+".join([str(direction), *names])
 
 
@@ -130,50 +113,3 @@ def previous_actions(joint, duration, episode, valid, terminated):
     # duration 仅描述水平/垂直组合的持续帧数，按钮变化不重置该计数。
     age[positions, 0] = np.minimum(duration[positions - 1], 60) / 60.0
     return previous, age
-
-
-BUTTON_COLUMNS = (
-    "input_a",
-    "input_d",
-    "input_b",
-    "input_c",
-    "input_change_card",
-    "input_spell_card",
-)
-
-
-def compact_actions(
-    frame,
-    side: str,
-    source_index: np.ndarray,
-    episode: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """保留紧凑原始轴/方向持续帧数/按钮列；训练时统一编码为 joint_action_id。"""
-    raw_horizontal = frame[f"{side}_input_horizontal"].to_numpy(np.int16)
-    raw_vertical = frame[f"{side}_input_vertical"].to_numpy(np.int16)
-    horizontal = np.sign(raw_horizontal).astype(np.int8)
-    vertical = np.sign(raw_vertical).astype(np.int8)
-
-    indices = np.arange(len(frame), dtype=np.int32)
-    starts = np.ones(len(frame), dtype=np.bool_)
-    if len(frame) > 1:
-        starts[1:] = (
-            (episode[1:] != episode[:-1])
-            | (horizontal[1:] != horizontal[:-1])
-            | (vertical[1:] != vertical[:-1])
-        )
-    run_starts = np.maximum.accumulate(np.where(starts, indices, 0))
-    duration = indices - run_starts + 1
-
-    buttons = np.column_stack([
-        frame[f"{side}_{column}"].to_numpy(np.int16) > 0
-        for column in BUTTON_COLUMNS
-    ]).astype(np.uint8)
-    buttons, _ = clean_card_overlap(buttons, f"{side} 原始输入帧")
-
-    return (
-        horizontal[source_index],
-        vertical[source_index],
-        duration[source_index],
-        buttons[source_index],
-    )

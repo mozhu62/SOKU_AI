@@ -7,15 +7,14 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-NETWORK_VERSION = "soku_bc_wide_tcn32_joint432_v2"
+NETWORK_VERSION = "soku_bc_tcn32_joint144_v1"
 MODEL_DEFAULTS = {
     "action_vocab_size": 2048, "block_vocab_size": 512, "weather_vocab_size": 32,
     "action_embedding_dim": 32, "block_embedding_dim": 8, "weather_embedding_dim": 8,
-    "current_hidden_dim": 1024, "object_hidden_dim": 64, "object_set_dim": 128,
+    "current_hidden_dim": 256, "object_hidden_dim": 64, "object_set_dim": 128,
     "temporal_hidden_dim": 256, "temporal_output_dim": 256, "fusion_dim": 1024,
     "object_embedding_mode": "separate",
-    "skill_embedding_dim": 8, "skill_level_embedding_dim": 4, "previous_action_embedding_dim": 32,
-    "card_vocab_size": 512, "card_embedding_dim": 16,
+    "skill_embedding_dim": 8, "previous_action_embedding_dim": 32,
     "temporal_mode": "tcn",
 }
 KEYFRAME_DEFAULTS = {"enabled": False, "changepoint_weight": 4.0}
@@ -32,7 +31,7 @@ DEFAULTS = {
                  "weight_decay": 0.0001, "log_interval": 20, "save_interval": 1000,
                  "validation_interval": 1000, "validation_batches": 20,
                  "cpu_threads": 4, "amp": True, "prefetch_batches": 2, "frozen_modules": []},
-    "output": {"directory": "outputs/bc_suika_wide_tcn32_v2"},
+    "output": {"directory": "outputs/bc_suika_tcn32_joint144"},
     "web": {"host": "127.0.0.1", "port": 8796, "port_attempts": 30},
 }
 MODULES = ("current_encoder", "object_encoder", "tcn", "fusion", "policy_head")
@@ -128,7 +127,7 @@ def validate(config: dict) -> dict:
     for key in ("current_hidden_dim", "object_hidden_dim", "object_set_dim", "temporal_hidden_dim",
                 "temporal_output_dim", "fusion_dim"):
         if model[key] != MODEL_DEFAULTS[key]:
-            raise ValueError(f"当前宽 TCN32 架构固定 model.{key}={MODEL_DEFAULTS[key]}")
+            raise ValueError(f"当前 TCN32 架构固定 model.{key}={MODEL_DEFAULTS[key]}")
     if config["web"]["host"] not in ("0.0.0.0", "127.0.0.1"):
         raise ValueError("web.host 只允许 0.0.0.0 或 127.0.0.1")
     if (type(config["web"]["port"]) is not int or type(config["web"]["port_attempts"]) is not int

@@ -54,7 +54,7 @@ class CurrentStateEncoder(nn.Module):
                                             padding_idx=START_ACTION_ID)
         self.resources = ResourceEncoder(cfg)
         self.input_dim = current_state_input_dim(cfg)
-        # 878D 原始状态只经过一次宽映射，避免先压缩到 256D 再反复变换。
+        # 228D 状态映射为 256D；历史 TCN 仍独立接收逐帧状态向量。
         self.network = hidden_mlp(self.input_dim, cfg["current_hidden_dim"], layers=1)
 
     def features(self, obs) -> torch.Tensor:

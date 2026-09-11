@@ -210,7 +210,7 @@ class Runtime:
             raise ValueError("请先暂停，等待当前更新结束后创建独立实验")
         if (set(values) - {"name", "expected_stage", "expected_output", "confirm"}
                 or values.get("confirm") is not True):
-            raise ValueError("创建实验需要明确确认；当前只支持固定宽 TCN32 的随机初始化独立分支")
+            raise ValueError("创建实验需要明确确认；当前只支持固定Joint144 / TCN32 的随机初始化独立分支")
         if values.get("expected_stage") != self.stage or values.get("expected_output") != str(self.output):
             raise ValueError("实验页面已过期，请刷新后重试")
         if self.snapshot()["locked_parameters"]:
@@ -265,11 +265,11 @@ class Runtime:
         self.timings = {key: 0.0 for key in self.timings}
         with self.lock:
             self.history.clear()
-        self.publish(config=config, config_source="工作台宽 TCN32 随机实验", output=str(target),
+        self.publish(config=config, config_source="工作台Joint144 / TCN32 随机实验", output=str(target),
                      step=0, updates=0, samples=0, stage=0, best=None, latest_train=None, latest_validation=None,
                      timings=self.timings, locked_parameters=[], error=None, **self._model_state(),
                      last_saved={"path": str(target / "last.pt"), "step": 0, "time": time.time()},
-                     message="宽 TCN32 随机实验已创建；原模型已保存。点击开始才训练新分支。")
+                     message="Joint144 / TCN32 随机实验已创建；原模型已保存。点击开始才训练新分支。")
         self._write_comparison()
 
     def _handle_commands(self):
@@ -368,7 +368,7 @@ class Runtime:
             if self.stop_event.is_set():
                 raise InterruptedError("数据准备已取消")
             self.learner = Learner(self.config)
-            LOGGER.info("BC %s；完整 432 类按键，标签平滑=%s，无奖励和目标网络",
+            LOGGER.info("BC %s；完整 144 类按键，标签平滑=%s，无奖励和目标网络",
                         "恢复 checkpoint" if package else "随机初始化",
                         self.config["training"]["label_smoothing"])
             if package:

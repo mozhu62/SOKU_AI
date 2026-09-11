@@ -23,7 +23,7 @@ def readback(player, positive_down):
     horizontal = sign(int(player.inputHorizontal))
     vertical = sign(int(player.inputVertical)) * (1 if positive_down else -1)
     return 5 + horizontal - 3 * vertical, tuple(int(getattr(player, key) > 0) for key in (
-        "inputA", "inputD", "inputB", "inputC", "inputChangeCard", "inputSpellCard"))
+        "inputA", "inputD", "inputB", "inputC"))
 
 
 class EvaluationStatistics:
@@ -35,7 +35,7 @@ class EvaluationStatistics:
         name = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
         self.directory = resolve(config["output"]) / name
         self.directory.mkdir(parents=True, exist_ok=False)
-        self.metadata = {"schema": "bc_live_evaluation_joint432_v1", "algorithm": "bc", "action_schema": ACTION_SCHEMA,
+        self.metadata = {"schema": "bc_live_evaluation_joint144_v1", "algorithm": "bc", "action_schema": ACTION_SCHEMA,
                          "action_catalog": action_catalog(), "config": copy.deepcopy(config),
                          "checkpoint": model.path, "checkpoint_sha256": model.sha256, "step": model.step,
                          "network_version": model.model.spec["network_version"],

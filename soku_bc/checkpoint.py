@@ -21,8 +21,8 @@ def load(path: Path):
     version = package.get("network_version")
     if version != NETWORK_VERSION:
         raise ValueError(
-            "BC checkpoint schema 不兼容：当前版本已将 878D 状态改为 1024D 宽编码，"
-            "删除 GRU，并改用独立 32 帧状态 TCN；旧权重不允许部分加载。"
+            "BC checkpoint schema 不兼容：当前版本为 228D 状态、256D 当前编码和 Joint144 输出，"
+            "已移除卡牌输入/输出和技能等级；旧 Joint432 权重不允许部分加载。"
             "请去掉 --resume，从随机初始化开始并使用新输出目录"
         )
     if package.get("spec", {}).get("network_version") != version:

@@ -8,7 +8,7 @@ from .config import ROOT, active_modules
 
 
 EXPERIMENT_ROOT = ROOT / "outputs" / "temporal_experiments"
-COMPARISON_VERSION = "bc_wide_tcn32_comparison_v2"
+COMPARISON_VERSION = "bc_joint144_tcn32_comparison_v1"
 
 
 def experiment_path(name):

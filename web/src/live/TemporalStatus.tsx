@@ -2,10 +2,10 @@ import {Card,Stat} from '../components/common';
 import {number,type Row} from '../lib/utils';
 
 export function TemporalStatus({state}:{state:Row}){
-  if(state.temporal?.mode!=='tcn')return <p className="notice">当前 checkpoint 不是宽 TCN32 网络，已拒绝进入实战控制。</p>;
+  if(state.temporal?.mode!=='tcn')return <p className="notice">当前 checkpoint 不是TCN32 网络，已拒绝进入实战控制。</p>;
   const capture=state.temporal_capture,prediction=state.prediction;
   if(!capture)return <p className="notice">TCN32：尚未收到真实帧队列状态，请确认已重启新版 BC 推理服务。</p>;
-  return <Card title="宽 TCN32 · 真实连续观测" note={capture.connected?'LiveFrames.v1 队列已连接；历史分支读取 32 帧 878D 状态':'等待新版 DLL 的 LiveFrames.v1 队列；当前不会使用短历史发键'}>
+  return <Card title="TCN32 · 真实连续观测" note={capture.connected?'LiveFrames.v1 队列已连接；历史分支读取 32 帧 228D 状态':'等待新版 DLL 的 LiveFrames.v1 队列；当前不会使用短历史发键'}>
     <div className="stats-grid compact">
       <Stat title="当前观测窗口" value={`${number(capture.buffer_frames,0)} / 32`} note={capture.ready?`游戏帧 ${capture.first_frame} — ${capture.last_frame}`:'积累中，满 32 帧才执行模型推理'}/>
       <Stat title="最近一次推理使用" value={prediction?.context_frames_used!=null?`${prediction.context_frames_used} / 32`:'尚未推理'} note={prediction?.context_first_frame!=null?`游戏帧 ${prediction.context_first_frame} — ${prediction.observation_frame}；不代表当前缓存`:'不重复旧帧、不用零填充凑满窗口'}/>

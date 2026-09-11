@@ -13,14 +13,14 @@ from tests.fixtures import tensor_observation
 
 class BCLearningTests(unittest.TestCase):
     def test_cross_entropy_only_and_masked_gradients(self):
-        logits = torch.zeros(1, 3, 432, requires_grad=True)
-        labels = torch.tensor([[192, 201, -999]])
+        logits = torch.zeros(1, 3, 144, requires_grad=True)
+        labels = torch.tensor([[64, 67, -999]])
         mask = torch.tensor([[True, True, False]])
         loss, parts = classification_parts(logits, labels, mask)
-        self.assertAlmostEqual(float(loss), math.log(432), places=5)
+        self.assertAlmostEqual(float(loss), math.log(144), places=5)
         self.assertTrue(torch.allclose(loss, F.cross_entropy(logits[mask], labels[mask])))
         loss.backward()
-        self.assertLess(logits.grad[0, 0, 192].item(), 0)
+        self.assertLess(logits.grad[0, 0, 64].item(), 0)
         self.assertGreater(logits.grad[0, 0, 0].item(), 0)
         self.assertEqual(logits.grad[0, 2].abs().sum().item(), 0)
         metrics = classification_metrics(parts)
@@ -30,9 +30,9 @@ class BCLearningTests(unittest.TestCase):
             classification_parts(logits, labels, torch.zeros_like(mask))
 
     def test_metrics_aggregate_by_valid_frames(self):
-        logits = torch.full((1, 3, 432), -8.0)
-        logits[:, :, 192] = 8.0
-        labels = torch.tensor([[192, 201, 201]])
+        logits = torch.full((1, 3, 144), -8.0)
+        logits[:, :, 64] = 8.0
+        labels = torch.tensor([[64, 67, 67]])
         rows = []
         for start, end in ((0, 1), (1, 3)):
             loss, parts = classification_parts(logits[:, start:end], labels[:, start:end],
@@ -51,15 +51,15 @@ class BCLearningTests(unittest.TestCase):
         self.assertEqual(tuple(model.module_groups()), active_modules(DEFAULTS['model']))
         self.assertFalse(hasattr(model, 'gru'))
         self.assertFalse(hasattr(model, 'memory_fusion'))
-        self.assertEqual(model.current_encoder.previous_action.num_embeddings, 433)
-        self.assertEqual(model.current_encoder.input_dim, 878)
-        self.assertEqual(model.current_encoder.network[0].out_features, 1024)
+        self.assertEqual(model.current_encoder.previous_action.num_embeddings, 145)
+        self.assertEqual(model.current_encoder.input_dim, 228)
+        self.assertEqual(model.current_encoder.network[0].out_features, 256)
         self.assertEqual(model.tcn.output_dim, 256)
-        self.assertEqual((model.fusion[0].in_features, model.fusion[0].out_features), (1536, 1024))
-        self.assertEqual(model.policy_head.out_features, 432)
+        self.assertEqual((model.fusion[0].in_features, model.fusion[0].out_features), (768, 1024))
+        self.assertEqual(model.policy_head.out_features, 144)
         with torch.no_grad():
             full = model(obs)
-            self.assertEqual(full.shape, (2, 5, 432))
+            self.assertEqual(full.shape, (2, 5, 144))
             memory, frames = None, []
             for index in range(5):
                 logits, memory = model.step_logits({key: value[:, index] for key, value in obs.items()}, memory)
@@ -79,7 +79,7 @@ class BCLearningTests(unittest.TestCase):
         self.assertFalse(hasattr(learner, 'target'))
         before = {key: value.clone() for key, value in learner.model.state_dict().items()}
         batch = {'observation': tensor_observation(1, 2), 'burn_lengths': torch.zeros(1, dtype=torch.long),
-                 'joint_action_id': torch.full((1, 2), 192, dtype=torch.long),
+                 'joint_action_id': torch.full((1, 2), 64, dtype=torch.long),
                  'mask': torch.ones(1, 2, dtype=torch.bool)}
         result = learner.train_batch(batch, diagnostics=True)
         self.assertFalse(result['optimizer_skipped'])

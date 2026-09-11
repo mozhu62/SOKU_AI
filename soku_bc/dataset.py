@@ -10,12 +10,14 @@ from pathlib import Path
 import numpy as np
 
 from .config import resolve
-from .schema import manifest, CARD_NUMERICAL_INDICES, OPTIONAL_STATE_FEATURES
+from .schema import manifest, OPTIONAL_STATE_FEATURES
 from .action_space import (
-    ACTION_SCHEMA, ACTION_COUNT, NEUTRAL_ACTION_ID, CARD_OVERLAP_POLICY,
-    clean_card_overlap, from_raw_axes, previous_actions,
+    ACTION_SCHEMA, ACTION_COUNT, NEUTRAL_ACTION_ID, RAW_ACTION_SCHEMA, RAW_CARD_PROJECTION,
+    project_raw_buttons, from_raw_axes, previous_actions,
 )
-from .resources import RESOURCE_SUFFIXES, resource_observation, validate_player_resources, normalization_arrays
+from .resources import (
+    RESOURCE_SUFFIXES, IGNORED_RESOURCE_SUFFIXES, resource_observation, validate_player_resources, normalization_arrays,
+)
 from .storage import atomic_json
 from .action_diagnostics import DIAGNOSTIC_VERSION, dataset_action_counts, merge_dataset_counts
 
@@ -106,9 +108,12 @@ def read_shard(path: Path, positive_down: bool):
             if meta.get("continuous_normalized") is not False:
                 raise ValueError("分片必须保存未归一化原值")
             # BC 不读取奖励；终局标记仅用于划分连续历史，不构造回报或下一状态目标。
-            shard = {key: source[key] for key in source.files if key not in ("metadata_json", "rewards")}
+            ignored = {"metadata_json", "rewards"} | {
+                f"{side}_{suffix}" for side in ("self", "opponent") for suffix in IGNORED_RESOURCE_SUFFIXES
+            }
+            shard = {key: source[key] for key in source.files if key not in ignored}
         count = len(shard["episode_id"])
-        if meta.get("action_schema", ACTION_SCHEMA) != ACTION_SCHEMA:
+        if meta.get("action_schema", RAW_ACTION_SCHEMA) != RAW_ACTION_SCHEMA:
             raise ValueError("action schema 不兼容：分片声明了不同的动作语义")
         if meta.get("action_shift") not in (0, 1):
             raise ValueError("缺少可靠的 action_shift，无法对齐实际输入历史")
@@ -159,23 +164,19 @@ def read_shard(path: Path, positive_down: bool):
                     or not np.issubdtype(categorical.dtype, np.integer)
                     or not np.isfinite(numeric).all() or not np.isfinite(categorical).all()):
                 raise ValueError(f"{side} 对象、offsets 或最近三对象约束错误")
-        # 清洗先于标签编码和历史右移，不删帧、不改奖励，也不回写 NPZ 破坏固定划分哈希。
-        shard["action_buttons"], overlap = clean_card_overlap(shard["action_buttons"], path.name)
-        cleaned_on_load = int(np.count_nonzero(overlap))
-        cleaned_on_conversion = meta.get("card_overlap_cleaned_rows", 0)
-        if (type(cleaned_on_conversion) is not int or not 0 <= cleaned_on_conversion <= count
-                or cleaned_on_conversion + cleaned_on_load > count):
-            raise ValueError("卡键清洗记录必须是分片行数范围内的整数")
-        if ("card_overlap_policy" in meta and meta["card_overlap_policy"] != CARD_OVERLAP_POLICY
-                or cleaned_on_conversion and meta.get("card_overlap_policy") != CARD_OVERLAP_POLICY):
-            raise ValueError("卡键清洗规则不兼容：当前只支持重合时保留用卡、清除切卡")
-        # 缓存只存 ndarray；诊断计数不进入 observation 或训练标签。
-        shard["card_overlap_cleaned_on_load"] = np.asarray(cleaned_on_load, np.int64)
-        shard["card_overlap_cleaned_rows"] = np.asarray(cleaned_on_conversion + cleaned_on_load, np.int64)
+        # 先去掉卡牌两列，再构造标签及上一帧历史；卡牌独有切换自然成为 hold。
+        raw_buttons = shard["action_buttons"]
+        shard["action_buttons"], ignored_cards = project_raw_buttons(raw_buttons, path.name)
+        shard["card_input_ignored_rows"] = np.asarray(np.count_nonzero(ignored_cards), np.int64)
         joint = from_raw_axes(shard["action_horizontal"], shard["action_vertical"],
                               shard["action_buttons"], positive_down, path.name)
-        if "joint_action_id" in shard and not np.array_equal(shard["joint_action_id"], joint):
-            raise ValueError("action schema 不兼容：已存 joint_action_id 与原始 Controller State 不一致")
+        if "joint_action_id" in shard:
+            stored = shard["joint_action_id"]
+            # 既有 v4 Joint432 标签只能用于核对，训练标签始终从真实原始按键重新生成。
+            cleaned_change = raw_buttons[:, 4] * (1 - raw_buttons[:, 5])
+            expected_old = joint * 3 + cleaned_change + 2 * raw_buttons[:, 5]
+            if not np.array_equal(stored, expected_old):
+                raise ValueError("原始 Joint432 标签与原始 Controller State 不一致")
         shard["joint_action_id"] = joint
         valid = shard["transition_valid"].astype(bool).copy()
         valid[-1] = False
@@ -210,7 +211,6 @@ class ReplayStore:
         self.lock = threading.RLock()
         self.info = {}
         state_stats, object_stats = Moments(18), Moments(8)
-        card_stats, cost_stats = Moments(5), Moments(1)
         optional_stats = [Moments(1) for _ in range(4)]
         shifts = set()
         train_names = set(split["train"])
@@ -229,13 +229,7 @@ class ReplayStore:
             # 复用正式标签的有效片段，一次预读时计数；不改采样、归一化或历史对齐。
             self.info[name]["action_history"] = dataset_action_counts(
                 shard["joint_action_id"], shard["previous_joint_action_id"], valid)
-            for key in ("card_overlap_cleaned_rows", "card_overlap_cleaned_on_load"):
-                self.info[name][key] = int(shard[key])
-            cleaned = self.info[name]["card_overlap_cleaned_rows"]
-            if cleaned:
-                LOGGER.info("卡键清洗 %s：%d 行（转换时 %d，加载时 %d）；保留用卡、清除切卡，不删帧",
-                            name, cleaned, cleaned - int(shard["card_overlap_cleaned_on_load"]),
-                            int(shard["card_overlap_cleaned_on_load"]))
+            self.info[name]["card_input_ignored_rows"] = int(shard["card_input_ignored_rows"])
             self.info[name]["optional_state_counts"] = shard["state_optional_mask"][valid].sum(0).astype(int).tolist()
             self.info[name]["resource_coverage"] = {
                 side: (((shard[f"{side}_skill_valid_mask"][valid, None].astype(np.int64)
@@ -249,8 +243,6 @@ class ReplayStore:
                     stats.update(shard["state_optional_continuous"][mask, column, None])
                 for side in ("self", "opponent"):
                     object_stats.update(shard[f"{side}_object_numerical"])
-                    card_stats.update(shard[f"{side}_card_state"][:, list(CARD_NUMERICAL_INDICES)])
-                    cost_stats.update(shard[f"{side}_hand_card_costs"][shard[f"{side}_hand_mask"].astype(bool)][:, None])
         self.action_history = {
             group: merge_dataset_counts([self.info[name]["action_history"] for name in split[group]])
             for group in ("train", "validation")
@@ -260,8 +252,8 @@ class ReplayStore:
         optional_export = {key: [stats.export()[key][0] for stats in optional_stats] for key in ("mean", "std")}
         optional_export["counts"] = [stats.count for stats in optional_stats]
         self.normalization = normalization or {"split_hash": split["sha256"], "state": state_stats.export(),
-                                                "objects": object_stats.export(), "cards": card_stats.export(),
-                                                "card_cost": cost_stats.export(), "optional_state": optional_export,
+                                                "objects": object_stats.export(),
+                                                "optional_state": optional_export,
                                                 "action_schema": ACTION_SCHEMA, "action_shift": next(iter(shifts))}
         if self.normalization["split_hash"] != split["sha256"]:
             raise ValueError("归一化参数与数据划分不一致")
@@ -270,10 +262,8 @@ class ReplayStore:
             raise ValueError("checkpoint 与数据动作/输入历史 schema 不兼容")
         self.norm = normalization_arrays(self.normalization)
         self.optional_enabled = np.asarray(self.normalization["optional_state"]["counts"]) > 0
-        LOGGER.info("卡键清洗汇总：%d 份分片、%d 行；规则=%s，动作空间仍为 %d 类",
-                    sum(row["card_overlap_cleaned_rows"] > 0 for row in self.info.values()),
-                    sum(row["card_overlap_cleaned_rows"] for row in self.info.values()),
-                    CARD_OVERLAP_POLICY, ACTION_COUNT)
+        LOGGER.info("Joint144 卡键投影：忽略 %d 行中的卡牌按钮；全部帧仍保留，源 NPZ 不变",
+                    sum(row["card_input_ignored_rows"] for row in self.info.values()))
 
     def get(self, name):
         with self.lock:
@@ -306,16 +296,14 @@ class ReplayStore:
                              "optional_state_counts": np.sum([x["optional_state_counts"] for x in rows], 0).tolist()}
             result[split].update(self.action_history[split])
             result[split]["neutral_fraction"] = result[split]["joint_counts"][NEUTRAL_ACTION_ID] / result[split]["transitions"]
-            result[split]["card_overlap_cleaned_rows"] = sum(x["card_overlap_cleaned_rows"] for x in rows)
-            result[split]["card_overlap_cleaned_on_load"] = sum(x["card_overlap_cleaned_on_load"] for x in rows)
-            result[split]["card_overlap_cleaned_files"] = sum(x["card_overlap_cleaned_rows"] > 0 for x in rows)
+            result[split]["card_input_ignored_rows"] = sum(x["card_input_ignored_rows"] for x in rows)
             result[split]["resource_coverage"] = {
                 side: np.sum([x["resource_coverage"][side] for x in rows], 0).tolist()
                 for side in ("self", "opponent")
             }
         result["split_hash"] = self.split["sha256"]
         result["action_diagnostics_version"] = DIAGNOSTIC_VERSION
-        result["card_overlap_policy"] = CARD_OVERLAP_POLICY
+        result["raw_card_projection"] = RAW_CARD_PROJECTION
         return result
 
     def sample(self, rng, cfg, split="train"):
@@ -353,7 +341,7 @@ class ReplayStore:
         result = {"state_continuous": np.clip((shard["state_continuous"][indices] - mean) / std, -10, 10),
                   "state_categorical": shard["state_categorical"][indices].astype(np.int64),
                   "tactical_state": shard["tactical_state"][indices].astype(np.float32)}
-        result.update(resource_observation(shard, indices, self.norm))
+        result.update(resource_observation(shard, indices))
         result["previous_joint_action_id"] = shard["previous_joint_action_id"][indices]
         result["previous_action_duration"] = shard["previous_action_duration"][indices]
         mean, std = self.norm["optional_state"]

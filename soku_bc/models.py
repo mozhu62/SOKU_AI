@@ -24,8 +24,8 @@ def network_spec(cfg):
         raise ValueError(f"模型包含旧架构或未知字段：{sorted(unknown)}")
     cfg = {**MODEL_DEFAULTS, **cfg}
     input_dim = current_state_input_dim(cfg)
-    if input_dim != 878:
-        raise ValueError(f"当前网络版本固定 878D 状态输入，实际 schema 生成 {input_dim}D")
+    if input_dim != 228:
+        raise ValueError(f"当前网络版本固定 228D 状态输入，实际 schema 生成 {input_dim}D")
     return {
         "network_version": network_version_for(cfg),
         "model": copy.deepcopy(cfg),
@@ -56,7 +56,7 @@ def network_spec(cfg):
 
 
 class BCNetwork(nn.Module):
-    """宽状态分支加独立 TCN32 的 Joint432 行为克隆网络。"""
+    """精简状态分支加独立 TCN32 的 Joint144 行为克隆网络。"""
 
     def __init__(self, cfg: dict, network_version: str | None = None):
         super().__init__()
@@ -68,7 +68,7 @@ class BCNetwork(nn.Module):
         if network_version is not None and network_version != expected_version:
             raise ValueError(
                 f"BC 网络结构不兼容：{network_version}，当前配置需要 {expected_version}；"
-                "旧 GRU/旧 256D TCN checkpoint 不能部分加载"
+                "旧 Joint432/GRU checkpoint 不能部分加载"
             )
         for key in (
             "current_hidden_dim",
@@ -79,14 +79,14 @@ class BCNetwork(nn.Module):
             "fusion_dim",
         ):
             if cfg[key] != MODEL_DEFAULTS[key]:
-                raise ValueError(f"当前宽 TCN32 架构固定 {key}={MODEL_DEFAULTS[key]}")
+                raise ValueError(f"当前 TCN32 架构固定 {key}={MODEL_DEFAULTS[key]}")
 
         self.uses_resources = True
         self.temporal_mode = "tcn"
         self.current_encoder = CurrentStateEncoder(cfg)
-        if self.current_encoder.input_dim != 878:
+        if self.current_encoder.input_dim != 228:
             raise ValueError(
-                f"当前网络版本要求 878D 状态输入，实际为 {self.current_encoder.input_dim}D；"
+                f"当前网络版本要求 228D 状态输入，实际为 {self.current_encoder.input_dim}D；"
                 "状态 schema 变化后必须升级 network_version"
             )
         self.object_encoder = ObjectSetEncoder(cfg)
@@ -120,7 +120,7 @@ class BCNetwork(nn.Module):
         }
 
     def state_features(self, obs):
-        """构造 878D 状态向量；此结果同时送入当前帧分支和独立历史分支。"""
+        """构造 228D 状态向量；此结果同时送入当前帧分支和独立历史分支。"""
         return self.current_encoder.features(obs)
 
     def encode_objects(self, obs):
@@ -174,10 +174,10 @@ class BCNetwork(nn.Module):
 
     @torch.no_grad()
     def step_logits(self, obs, memory=None):
-        """单帧接口保留此前 31 个 878D 状态，与当前帧组成 32 帧窗口。"""
+        """单帧接口保留此前 31 个 228D 状态，与当前帧组成 32 帧窗口。"""
         state = self.state_features(obs)
         if state.ndim != 2:
-            raise ValueError("单帧推理 observation 必须生成 [batch,878] 状态")
+            raise ValueError("单帧推理 observation 必须生成 [batch,228] 状态")
         if memory is not None and (
             memory.ndim != 3
             or memory.shape[0] != state.shape[0]

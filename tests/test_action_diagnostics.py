@@ -10,13 +10,13 @@ from soku_bc.learner import classification_parts, classification_metrics, diagno
 
 class ActionDiagnosticsTests(unittest.TestCase):
     def test_real_history_boundaries_and_invalid_positions(self):
-        actions = np.array([192, 192, 200, 200, 200, 200, 220, 220, 220])
+        actions = np.array([64, 64, 80, 80, 80, 80, 100, 100, 100])
         episodes = np.array([0, 0, 0, 0, 1, 1, 1, 1, 1])
         valid = np.array([True, True, False, True, True, True, True, True, False])
         terminated = np.array([False, True, False, False, False, True, False, False, False])
         previous, _ = previous_actions(actions, np.ones(9, dtype=int), episodes, valid, terminated)
         # 起点、终局后、断帧后及跨 episode 均不得猜测历史；三处可比较位置全部保持操作。
-        np.testing.assert_array_equal(previous, [432, 192, 432, 432, 432, 200, 432, 220, 220])
+        np.testing.assert_array_equal(previous, [144, 64, 144, 144, 144, 80, 144, 100, 100])
         counts = dataset_action_counts(actions, previous, valid)
         self.assertEqual(counts, dict(valid_samples=7, previous_action_samples=3,
                                       previous_action_copy_correct=3, action_change_samples=0))
@@ -25,15 +25,15 @@ class ActionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(summary['action_change_fraction'], 0)
 
     def test_burn_in_padding_exclusion_and_loss_unchanged(self):
-        logits = torch.zeros(1, 4, 432, requires_grad=True)
-        labels = torch.tensor([[192, 195, 195, 431]])
+        logits = torch.zeros(1, 4, 144, requires_grad=True)
+        labels = torch.tensor([[64, 65, 65, 143]])
         mask = torch.tensor([[True, True, True, False]])
-        batch = {'observation': {'previous_joint_action_id': torch.tensor([[30, 31, 432, 192, 195, 2]])},
+        batch = {'observation': {'previous_joint_action_id': torch.tensor([[30, 31, 144, 64, 65, 2]])},
                  'mask': mask}
         loss, parts = classification_parts(logits, labels, mask)
         gradient_before = torch.autograd.grad(loss, logits, retain_graph=True)[0]
         actual_previous = diagnostic_previous_actions(batch, 2)
-        self.assertEqual(actual_previous.tolist(), [432, 192, 195])
+        self.assertEqual(actual_previous.tolist(), [144, 64, 65])
         metrics = classification_metrics(parts, actual_previous)
         gradient_after = torch.autograd.grad(loss, logits)[0]
         self.assertTrue(torch.equal(gradient_before, gradient_after))
@@ -44,14 +44,14 @@ class ActionDiagnosticsTests(unittest.TestCase):
 
     def test_global_accuracy_uses_change_counts_not_batch_averages(self):
         def row(labels, previous, predictions):
-            logits = torch.full((1, len(labels), 432), -5.0)
+            logits = torch.full((1, len(labels), 144), -5.0)
             logits[0, torch.arange(len(labels)), predictions] = 5.0
             loss, parts = classification_parts(logits, torch.tensor([labels]),
                                                torch.ones(1, len(labels), dtype=torch.bool))
             return {**classification_metrics(parts, torch.tensor(previous)), 'loss': float(loss)}
         first = row([2, 2], [1, 2], [2, 2])  # 一个切换帧，正确。
         second = row([3, 3, 3], [1, 1, 1], [1, 1, 1])  # 三个切换帧，均错误。
-        third = row([0], [432], [0])  # 起点总体预测正确，但没有可比较历史。
+        third = row([0], [144], [0])  # 起点总体预测正确，但没有可比较历史。
         result = aggregate_metrics([first, second, third])
         self.assertEqual(result['action_change_samples'], 4)
         self.assertEqual(result['action_change_correct'], 1)
@@ -63,22 +63,22 @@ class ActionDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(third['previous_action_baseline'])
 
     def test_no_changes_returns_null_accuracy_and_real_zero_fraction(self):
-        logits = torch.zeros(1, 2, 432)
-        _, parts = classification_parts(logits, torch.tensor([[192, 192]]), torch.ones(1, 2, dtype=torch.bool))
-        result = classification_metrics(parts, torch.tensor([192, 192]))
+        logits = torch.zeros(1, 2, 144)
+        _, parts = classification_parts(logits, torch.tensor([[64, 64]]), torch.ones(1, 2, dtype=torch.bool))
+        result = classification_metrics(parts, torch.tensor([64, 64]))
         self.assertIsNone(result['action_change_accuracy'])
         self.assertIsNone(result['action_change_top5_accuracy'])
         self.assertEqual(result['action_change_fraction'], 0)
 
     def test_synchronized_horizontal_mirror_preserves_change_relation(self):
-        actions = np.array([encode(6, 0, 0), encode(6, 2, 0), encode(6, 2, 0), encode(5, 1, 0)])
-        previous = np.array([432, actions[0], actions[1], actions[2]])
+        actions = np.array([encode(6, 0), encode(6, 2), encode(6, 2), encode(5, 1)])
+        previous = np.array([144, actions[0], actions[1], actions[2]])
         def mirror(ids):
             result = ids.copy()
-            known = result < 432
-            direction, combat, card = decode(result[known])
+            known = result < 144
+            direction, combat = decode(result[known])
             mapping = np.array([0, 3, 2, 1, 6, 5, 4, 9, 8, 7])
-            result[known] = encode(mapping[direction], combat, card)
+            result[known] = encode(mapping[direction], combat)
             return result
         valid = np.ones(len(actions), bool)
         self.assertEqual(dataset_action_counts(actions, previous, valid),

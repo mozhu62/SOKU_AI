@@ -1,4 +1,4 @@
-# 宽 TCN32 实战：完整真实帧窗口
+# TCN32 实战：完整真实帧窗口
 
 ## 行为约定
 
@@ -23,24 +23,24 @@
 
 ## 网络输入
 
-每个队列帧先由 ObservationBuilder 转成 observation，再由模型构造 878D 状态表示。窗口缓存：
+每个队列帧先由 ObservationBuilder 转成 observation，再由模型构造 228D 状态表示。窗口缓存：
 
 ~~~text
-[32,878]
+[32,228]
 ~~~
 
 推理时：
 
 - 历史 TCN 对完整窗口输出 256D。
-- 当前帧 878D 经单层宽编码得到 1024D。
+- 当前帧 228D 经单层编码得到 256D。
 - 当前帧双方对象分别得到 128D。
-- 四路拼成 1536D，经 1024D 融合后输出 432 logits。
+- 四路拼成 768D，经 1024D 融合后输出 144 logits。
 
 历史对象不会缓存进 TCN，TCN 也不再读取旧 256D Battle Feature。
 
 ## 手动更新与启动
 
-以下命令由使用者在 soku_bc 目录执行；本次交付没有代为执行：
+本次网络实验没有修改 DLL；已支持 LiveFrames.v1 的 DLL 可继续使用。以下 DLL 命令仅供尚未具备该队列的旧环境升级，用户按需执行：
 
 ~~~text
 cmake -S ../tools/soku-data-monitor -B ../tools/soku-data-monitor/build-win32 -A Win32 -DSOKU_ENABLE_PPO_STREAM=ON
@@ -67,10 +67,10 @@ python scripts/play.py
 
 1. 旧 DLL 明确提示缺少 LiveFrames.v1，不发键。
 2. 31/32 帧时只等待；达到 32/32 后才允许推理。
-3. 窗口滑动时只编码新增帧的 878D 状态。
+3. 窗口滑动时只编码新增帧的 228D 状态。
 4. 暂停后帧号继续推进，继续时不无故清空连续历史。
 5. 真正缺帧、换局和进程切换时重新积累。
 6. 批量窗口推理与逐帧状态缓存得到一致 logits。
-7. 方向、ABCD、切卡和用卡都按 Joint432 解码执行。
+7. 仅方向、ABCD 按 Joint144 解码执行，不发送切卡或用卡。
 
 对应静态验收源码为 tests/test_live_tcn_stream.py 和 tests/test_temporal_runtime.py；本次未执行。

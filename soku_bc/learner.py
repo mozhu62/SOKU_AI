@@ -86,13 +86,12 @@ def classification_metrics(parts, previous_joint_action_id=None):
     expert_log_prob = log_prob.gather(-1, labels[:, None]).squeeze(-1)
     entropy = -(probability * log_prob).sum(-1)
     keys = ("nll", "joint_accuracy", "joint_top5", "direction_accuracy", "combat_accuracy",
-            "card_accuracy", "expert_probability", "confidence_mean", "entropy", "normalized_entropy",
+            "expert_probability", "confidence_mean", "entropy", "normalized_entropy",
             "neutral_data_fraction", "neutral_pred_fraction", "logit_abs_max")
     scalars = torch.stack((-expert_log_prob.mean(), correct.float().mean(),
                            top5_correct.float().mean(),
-                           (prediction // 48 == labels // 48).float().mean(),
-                           ((prediction % 48) // 3 == (labels % 48) // 3).float().mean(),
-                           (prediction % 3 == labels % 3).float().mean(),
+                           (prediction // 16 == labels // 16).float().mean(),
+                           (prediction % 16 == labels % 16).float().mean(),
                            expert_log_prob.exp().mean(), confidence.mean(), entropy.mean(),
                            entropy.mean() / math.log(ACTION_COUNT),
                            (labels == NEUTRAL_ACTION_ID).float().mean(),

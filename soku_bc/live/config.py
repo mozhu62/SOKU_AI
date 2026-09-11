@@ -12,7 +12,7 @@ from .windows_api import parse_virtual_key
 
 
 DEFAULTS = {
-    "checkpoint": "outputs/bc_suika_wide_tcn32_v2/last.pt",
+    "checkpoint": "outputs/bc_suika_tcn32_joint144/last.pt",
     "device": "cpu", "cpu_threads": 2,
     "output": "outputs/evaluations", "rounds": 20,
     "environment": {
@@ -25,8 +25,7 @@ DEFAULTS = {
         "watchdog_seconds": 1.0, "poll_seconds": 0.002,
     },
     "keyboard": {"up": "W", "down": "S", "left": "A", "right": "D",
-                 "melee": "J", "dash": "K", "light_projectile": "I", "heavy_projectile": "L",
-                 "change_card": "O", "use_spell_card": "P"},
+                 "melee": "J", "dash": "K", "light_projectile": "I", "heavy_projectile": "L"},
     "restart": {"enabled": True, "confirm_key": "Z", "hold_seconds": 0.05,
                 "interval_seconds": 0.25, "timeout_seconds": 60.0, "max_presses": 240},
     "web": {"host": "127.0.0.1", "port": 8797, "port_attempts": 30},
@@ -70,7 +69,7 @@ def validate(config):
     if env["player_side"] not in ("left", "right"):
         raise ValueError("player_side 必须是 left（1P）或 right（2P）")
     if env["decision_interval_frames"] != 1:
-        raise ValueError("宽 TCN32 实战要求 decision_interval_frames=1，以便逐帧维护真实 32 帧窗口")
+        raise ValueError("TCN32 实战要求 decision_interval_frames=1，以便逐帧维护真实 32 帧窗口")
     for key in ("max_inference_lag_frames", "max_memory_gap_frames"):
         if not integer(env[key], 1, 120):
             raise ValueError(f"{key} 必须是 1～120 帧")
@@ -88,7 +87,7 @@ def validate(config):
     if not 1 <= restart["timeout_seconds"] <= 600 or not integer(restart["max_presses"], 1, 2000):
         raise ValueError("续局超时或点按次数不合法")
     if set(config["keyboard"]) != {"up", "down", "left", "right", *BUTTON_FEATURES}:
-        raise ValueError("按键配置应包括四方向与六个按钮")
+        raise ValueError("按键配置应包括四方向与四个按钮")
     # 在停止旧会话前验证键位；这里只解析键名，不打开 Windows API、不发送按键。
     try:
         keys = [parse_virtual_key(value) for value in config["keyboard"].values()]
@@ -96,7 +95,7 @@ def validate(config):
     except (TypeError, AttributeError, ValueError) as exc:
         raise ValueError(f"按键映射无效：{exc}") from exc
     if len(set(keys)) != len(keys) or 0x79 in keys or confirm == 0x79:
-        raise ValueError("十个游戏按键必须互不重复；游戏键和续局键均不能占用 F10")
+        raise ValueError("八个游戏按键必须互不重复；游戏键和续局键均不能占用 F10")
     if config["web"]["host"] != "127.0.0.1":
         raise ValueError("实战键盘控制工作台仅监听 127.0.0.1；离线训练服务的局域网设置不受影响")
     if not integer(config["web"]["port"], 1024, 65535) or not integer(config["web"]["port_attempts"], 1, 100):

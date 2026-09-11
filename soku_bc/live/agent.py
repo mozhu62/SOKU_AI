@@ -25,7 +25,7 @@ class LiveAgent:
         package = load(path)
         self.model = BCNetwork(package["spec"]["model"], package["network_version"])
         if self.model.spec != package["spec"]:
-            raise ValueError("模型输入/Joint Action schema 不兼容；只接受新版 432-way BC 模型")
+            raise ValueError("模型输入/Joint Action schema 不兼容；只接受新版 144-way BC 模型")
         # BC 包的权重键是 model；不能把 CQL 的 online Q 网络或优化器当作策略加载。
         self.model.load_state_dict(package["model"], strict=True)
         self.model.to(self.device).eval().requires_grad_(False)
@@ -67,7 +67,7 @@ class LiveAgent:
         previous_id, previous_duration = self.tcn_window.previous_action, self.tcn_window.previous_duration
         if (logits.shape != (1, ACTION_COUNT) or not torch.isfinite(logits).all()
                 or (memory is not None and not torch.isfinite(memory).all())):
-            raise ValueError("BC 输出形状不是 [1,432] 或 logits/时序状态含 NaN/Inf，已停止控制")
+            raise ValueError("BC 输出形状不是 [1,144] 或 logits/时序状态含 NaN/Inf，已停止控制")
         # 转 CPU 同步 CUDA，使耗时覆盖实际计算，而不是只测异步提交。
         joint_logits = logits[0].float().cpu()
         probabilities = joint_logits.softmax(-1)
@@ -77,8 +77,8 @@ class LiveAgent:
         if not torch.isfinite(probabilities).all() or not torch.isfinite(entropy):
             raise ValueError("BC 分类概率或熵含 NaN/Inf，已停止控制")
         direction, buttons = to_controller(action)
-        _, combat, card = decode(action)
-        return {"joint_action_id": action, "action": action_name(action), "combat_mask": combat, "card_command": card,
+        _, combat = decode(action)
+        return {"joint_action_id": action, "action": action_name(action), "combat_mask": combat,
                 "direction": direction, "buttons": tuple(int(x) for x in buttons),
                 "joint_logits": joint_logits.tolist(), "joint_probabilities": probabilities.tolist(),
                 "selected_probability": float(probabilities[action]), "entropy": float(entropy),

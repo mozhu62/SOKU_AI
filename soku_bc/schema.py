@@ -2,14 +2,11 @@ from __future__ import annotations
 
 
 CQL_REPLAY_SCHEMA = "soku_cql_raw_axes_action_resources_v4"
-POLICY_INPUT_SCHEMA = "soku_cql_joint432_observation_v1"
-RESOURCE_INPUT_SCHEMA = "soku_cql_ordered_resources_v2"
+POLICY_INPUT_SCHEMA = "soku_bc_joint144_observation_v1"
+RESOURCE_INPUT_SCHEMA = "soku_bc_skill_variants_v1"
 CQL_TACTICAL_SCHEMA = "soku_cql_replay_tactical_v1"
 SKILL_COMMANDS = ("236", "623", "214", "22")
 MAX_HAND_CARDS = 16
-UNKNOWN_CARD_ID = 65535
-CARD_NUMERICAL_FEATURES = ("card_gauge", "card_count", "hand_capacity", "hand_count", "hand_cards_used")
-CARD_NUMERICAL_INDICES = (0, 1, 5, 6, 7)
 OPTIONAL_STATE_FEATURES = ("self_max_spirit", "self_hitstop", "opponent_max_spirit", "opponent_hitstop")
 
 STATE_CONTINUOUS_FEATURES = (
@@ -34,7 +31,9 @@ OBJECT_NUMERICAL_FEATURES = (
 )
 OBJECT_CATEGORICAL_FEATURES = ("action", "action_block_id")
 ACTION_DIRECTION_FEATURES = ("horizontal", "vertical", "duration")
-BUTTON_FEATURES = ("melee", "dash", "light_projectile", "heavy_projectile", "change_card", "use_spell_card")
+BUTTON_FEATURES = ("melee", "dash", "light_projectile", "heavy_projectile")
+# v4 是既有文件格式，不随本次模型动作实验重新定义。
+RAW_BUTTON_FEATURES = (*BUTTON_FEATURES, "change_card", "use_spell_card")
 
 GLOBAL_COLUMNS = (
     "sample_serial", "battle_frame", "initialized", "in_battle",
@@ -76,7 +75,7 @@ def manifest() -> dict:
         "object_numerical": list(OBJECT_NUMERICAL_FEATURES),
         "object_categorical": list(OBJECT_CATEGORICAL_FEATURES),
         "action_axes": list(ACTION_DIRECTION_FEATURES),
-        "button_features": list(BUTTON_FEATURES),
+        "button_features": list(RAW_BUTTON_FEATURES),
         "button_storage": "six_independent_uint8_columns",
         "replay_resources": {
             "skill_commands": list(SKILL_COMMANDS),
@@ -90,7 +89,9 @@ def manifest() -> dict:
 
 def policy_input_manifest() -> dict:
     """原始 v4 NPZ 可复用，但训练输入和动作语义采用独立的新版本，旧权重不能加载。"""
-    from .action_space import ACTION_SCHEMA, ACTION_COUNT, START_ACTION_ID, COMBAT_BUTTONS, CARD_COMMANDS
+    from .action_space import (
+        ACTION_SCHEMA, ACTION_COUNT, START_ACTION_ID, COMBAT_BUTTONS, PREVIOUS_ACTION_VOCAB, RAW_CARD_PROJECTION,
+    )
     result = {
         "observation_schema": POLICY_INPUT_SCHEMA,
         "raw_dataset_schema": CQL_REPLAY_SCHEMA,
@@ -103,29 +104,22 @@ def policy_input_manifest() -> dict:
         "optional_state_continuous": list(OPTIONAL_STATE_FEATURES),
         "optional_state_mask": "原始字段存在且训练集有记录时才有效；缺失不是数值零",
         "objects_per_side": 3,
-        "previous_joint_action_id": {"vocabulary": 433, "start_pad": START_ACTION_ID, "offset": -1},
+        "previous_joint_action_id": {"vocabulary": PREVIOUS_ACTION_VOCAB, "start_pad": START_ACTION_ID, "offset": -1},
         "previous_action_duration": "clip(direction_axes_duration[t-1], 0, 60)/60; boundary=0",
         "action_schema": ACTION_SCHEMA,
         "joint_action_count": ACTION_COUNT,
         "combat_bit_order": list(COMBAT_BUTTONS),
-        "card_commands": list(CARD_COMMANDS),
-        "joint_encoding": "(direction-1)*48+combat_mask*3+card_command",
+        "raw_card_projection": RAW_CARD_PROJECTION,
+        "joint_encoding": "(direction-1)*16+combat_mask",
         "continuous_normalization": "training_split_only; previous duration uses fixed 60-frame scaling",
     }
     result["resource_inputs"] = {
             "schema": RESOURCE_INPUT_SCHEMA,
             "sides": ["self", "opponent"],
             "skill_slots": [f"skill_slot_{i}" for i in range(1, 5)],
-            "skill_categorical": ["variant", "learned_level", "effective_level"],
+            "skill_categorical": ["variant"],
             "skill_tokens": "0=unknown; known raw value + 1",
             "skill_mask": "one boolean per command slot",
-            "card_numerical": list(CARD_NUMERICAL_FEATURES),
-            "normalization": "training_split_only",
-            "hand_slots": MAX_HAND_CARDS,
-            "hand_order": "selected_first_then_switch_order",
-            "hand_features": ["card_id", "cost", "valid_mask"],
-            "selected_card": "手牌首槽即当前选中卡；按切卡次序 concat，不进行 pooling",
-            "card_embedding": "shared_across_both_players_and_all_slots",
-            "unknown_card_id": UNKNOWN_CARD_ID,
+            "removed_inputs": ["skill_levels", "skill_effective_levels", "all_card_state"],
         }
     return result

@@ -154,7 +154,7 @@ class Workbench:
             config["environment"]["cpu_difficulty_label"] = str(value["difficulty"])[:200]
         if "keyboard" in value:
             if not isinstance(value["keyboard"], dict) or set(value["keyboard"]) != set(config["keyboard"]):
-                raise ValueError("必须提交完整的四方向和六按钮按键映射")
+                raise ValueError("必须提交完整的四方向和四按钮按键映射")
             config["keyboard"] = value["keyboard"]
         if "decision_interval_frames" in value:
             config["environment"]["decision_interval_frames"] = value["decision_interval_frames"]

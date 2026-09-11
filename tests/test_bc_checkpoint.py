@@ -17,7 +17,7 @@ class BCCheckpointTests(unittest.TestCase):
         config['training'].update(device='cpu', amp=False, burn_in=0)
         learner = Learner(config)
         batch = {'observation': tensor_observation(1, 2), 'burn_lengths': torch.zeros(1, dtype=torch.long),
-                 'joint_action_id': torch.full((1, 2), 192, dtype=torch.long),
+                 'joint_action_id': torch.full((1, 2), 64, dtype=torch.long),
                  'mask': torch.ones(1, 2, dtype=torch.bool)}
         learner.train_batch(batch)
         with tempfile.TemporaryDirectory() as directory:

@@ -1,5 +1,5 @@
 # 这是独立的 Windows 实战验证配置，不改变训练配置和模型权重。
-checkpoint: outputs/bc_suika_wide_tcn32_v2/last.pt
+checkpoint: outputs/bc_suika_tcn32_joint144/last.pt
 device: cpu
 cpu_threads: 2
 output: outputs/evaluations
@@ -28,9 +28,7 @@ keyboard:
   dash: K
   light_projectile: I
   heavy_projectile: L
-  # 切卡和符卡默认 O/P；请与游戏 1P 按键设置保持一致。
-  change_card: O
-  use_spell_card: P
+  # 本实验只控制方向与 ABCD，不发送切卡或用卡。
 restart:
   enabled: true
   confirm_key: Z

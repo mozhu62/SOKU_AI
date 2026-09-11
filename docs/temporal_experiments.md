@@ -1,14 +1,14 @@
-# BC 宽 TCN32 独立实验
+# BC TCN32 独立实验
 
-当前版本已经删除 GRU，不再提供 GRU/TCN 结构切换。实验室只创建相同宽 TCN32 网络的独立随机初始化分支，用来比较随机种子、冻结模块或训练超参数。
+当前版本已经删除 GRU，不再提供 GRU/TCN 结构切换。实验室只创建相同TCN32 网络的独立随机初始化分支，用来比较随机种子、冻结模块或训练超参数。
 
 ## 固定结构
 
 ~~~text
-878D → 1024D 当前状态
-878D × 32 → 256D TCN
+228D → 256D 当前状态
+228D × 32 → 256D TCN
 对象 128D + 128D
-concat 1536D → 1024D → Joint432
+concat 768D → 1024D → Joint144
 ~~~
 
 TCN 的四个残差块各含两层因果卷积，感受野严格为 32 帧。训练固定 burn_in=31；这 31 帧是卷积上下文，不产生独立 CE。
@@ -27,7 +27,7 @@ TCN 的四个残差块各含两层因果卷积，感受野严格为 32 帧。训
 
 页面比较 Validation NLL、总体 Top-1、动作切换 Top-1、有效监督帧和吞吐。只有 split hash、normalization、模型配置、冻结项与训练超参数一致时，随机种子对照才可直接解释。
 
-旧 comparison.json 使用 bc_temporal_comparison_v1，不会伪装成当前 bc_wide_tcn32_comparison_v2 记录。
+旧 comparison.json 使用 bc_temporal_comparison_v1，不会伪装成当前 bc_joint144_tcn32_comparison_v1 记录。
 
 ## 冻结实验
 

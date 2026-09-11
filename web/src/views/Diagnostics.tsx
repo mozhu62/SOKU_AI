@@ -5,11 +5,11 @@ import {number,percent} from '../lib/utils';
 import {JointFrequency} from '../components/JointActions';
 
 export const moduleLabels:Row={
-  current_encoder:'当前状态 · 878D→1024D',
+  current_encoder:'当前状态 · 228D→256D',
   object_encoder:'双方对象集合 · 128D+128D',
-  tcn:'历史状态 TCN32 · 878D×32→256D',
-  fusion:'联合融合 · 1536D→1024D',
-  policy_head:'Joint432 分类头',
+  tcn:'历史状态 TCN32 · 228D×32→256D',
+  fusion:'联合融合 · 768D→1024D',
+  policy_head:'Joint144 分类头',
 };
 
 export function Diagnostics({state}:{state:Row}){
@@ -26,7 +26,6 @@ export function Diagnostics({state}:{state:Row}){
     </div>
     <div className="stats-grid">
       <Stat title="方向 / 战斗掩码一致率" value={`${percent(last.direction_accuracy)} / ${percent(last.combat_accuracy)}`} note="从唯一的完整动作预测解码，不是独立输出头"/>
-      <Stat title="卡牌命令一致率" value={percent(last.card_accuracy)}/>
       <Stat title="平均最大概率" value={percent(last.confidence_mean)} note={`最大 |logit| ${number(last.logit_abs_max,4)}；高置信度不等于正确`}/>
       <Stat title="Neutral 数据 / 预测占比" value={`${percent(last.neutral_data_fraction)} / ${percent(last.neutral_pred_fraction)}`} note="5 + 无按钮 + NONE（ID 192）"/>
     </div>
@@ -38,8 +37,8 @@ export function Diagnostics({state}:{state:Row}){
     </Card>
     <Trend title="训练：动作切换准确率" rows={rows} series={[{key:'train_action_change_accuracy',name:'切换帧 Top-1',color:'#f38caa',connectNulls:false},{key:'joint_accuracy',name:'总体 Top-1',color:'#42d6b0'},{key:'train_previous_action_baseline',name:'全量复制基线',color:'#b7a4ed',connectNulls:false}]} note="只记录诊断步，批次内容会变化；缺少切换帧时曲线断开，不显示虚假的 0%"/>
     <div className="two-columns"><Trend title="专家概率与预测置信度" rows={rows} series={[{key:'expert_probability',name:'专家动作概率',color:'#42d6b0'},{key:'confidence_mean',name:'最大动作概率',color:'#70a7ff'}]}/><Trend title="梯度范数" rows={rows} series={[{key:'grad_norm',name:'裁剪前全局范数',color:'#edbf6e'}]}/></div>
-    <div className="two-columns"><Card title="同批专家动作分布"><JointFrequency catalog={state.action_catalog} counts={last.joint_data} total={last.samples}/></Card><Card title="同批模型 argmax 动作分布" note="频率不是单帧概率；可以切换全部 432 类"><JointFrequency catalog={state.action_catalog} counts={last.joint_pred} total={last.samples}/></Card></div>
-    <Card title="验证：全部动作的召回率" note={`Step ${val.step??'—'} · 已覆盖 ${val.represented_actions??'—'} / 432 · 宏平均 ${percent(val.macro_recall)}；未出现的动作不记零分`}><DataTable rows={recall} columns={[{key:'name',title:'完整 Controller State'},{key:'id',title:'ID'},{key:'count',title:'专家样本数'},{key:'correct',title:'正确预测数'},{key:'recall',title:'召回率',render:percent}]}/></Card>
+    <div className="two-columns"><Card title="同批专家动作分布"><JointFrequency catalog={state.action_catalog} counts={last.joint_data} total={last.samples}/></Card><Card title="同批模型 argmax 动作分布" note="频率不是单帧概率；可以切换全部 144 类"><JointFrequency catalog={state.action_catalog} counts={last.joint_pred} total={last.samples}/></Card></div>
+    <Card title="验证：全部动作的召回率" note={`Step ${val.step??'—'} · 已覆盖 ${val.represented_actions??'—'} / 144 · 宏平均 ${percent(val.macro_recall)}；未出现的动作不记零分`}><DataTable rows={recall} columns={[{key:'name',title:'完整 Controller State'},{key:'id',title:'ID'},{key:'count',title:'专家样本数'},{key:'correct',title:'正确预测数'},{key:'recall',title:'召回率',render:percent}]}/></Card>
     <Card title="模块梯度与实际权重变化" note="冻结参数清除梯度；变化量是一次更新的 L2，冻结共享主干后仍可单独训练分类头"><DataTable rows={modules} columns={[{key:'name',title:'模块'},{key:'count',title:'参数量'},{key:'frozen',title:'状态'},{key:'gradient',title:'梯度范数',render:v=>number(v,7)},{key:'change',title:'参数变化 L2',render:v=>number(v,9)}]}/></Card>
   </>;
 }

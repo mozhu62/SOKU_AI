@@ -18,7 +18,7 @@ export function ActionHistoryPanel({state}:{state:Row}){
     <p>动作切换帧准确率只看专家操作发生变化的位置，衡量移动、Dash、攻击、弹幕等操作之间的切换时机与新动作选择是否预测正确。</p>
     <p className="muted">切换帧占全部有效验证帧：本次抽样 {percent(val.val_action_change_fraction)} / 全量验证集 {percent(val.val_dataset_action_change_fraction??data.action_change_fraction)}。切换帧 Top-5：{percent(val.val_action_change_top5_accuracy)}。</p>
     <details><summary>分母与可比性说明</summary>
-      <p>复制基线排除 START/PAD=432、episode/终局/断帧后的片段起点；不跨断点寻找历史。原有总体 Top-1 口径保持不变，仍包含有效起点帧。</p>
+      <p>复制基线排除 START/PAD=144、episode/终局/断帧后的片段起点；不跨断点寻找历史。原有总体 Top-1 口径保持不变，仍包含有效起点帧。</p>
       <p>与模型同批、同历史有效位置比较：复制基线 {percent(val.val_batch_previous_action_baseline)}；模型 Top-1 {percent(val.val_history_joint_accuracy)}；可比较帧 {number(val.val_previous_action_samples,0)}。全量基线不会随训练变化，但固定验证抽样与全量数据的比例可能略有差别。</p>
       <p>更高的总体 Top-1 不单独证明学会了操作切换；应结合切换准确率与样本量。旧日志缺少新增字段时显示“未记录”，不会补成零。</p>
     </details>

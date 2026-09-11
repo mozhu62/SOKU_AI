@@ -83,12 +83,12 @@ class LiveTCNStreamTests(unittest.TestCase):
         for frame in frames:
             self.assertTrue(matches(frame.resources, frame.payload))
             self.assertEqual(frame.resources.resources.left.skills[0].variant, frame.payload.battleFrame % 3)
-        write_frames(client, 45, 200)
+        write_frames(client, 45, 80)
         frames, dropped = client.read()
         self.assertEqual(len(frames), CAPACITY)
         self.assertEqual(dropped, 28)
         self.assertEqual(frames[0].payload.battleFrame, 73)
-        self.assertEqual(frames[-1].payload.battleFrame, 200)
+        self.assertEqual(frames[-1].payload.battleFrame, 80)
 
     def test_ring_odd_slot_is_not_a_valid_frame(self):
         storage, client = fake_client()
@@ -145,7 +145,7 @@ class LiveTCNStreamTests(unittest.TestCase):
         agent.temporal_mode, agent.memory, agent.tcn_window = 'tcn', None, TCNObservationWindow()
         history = ControllerHistory(0)
         def observe(p):
-            history.observe((int(p.gameProcessId), int(p.currentRound), int(p.battleFrame)), 6, [0] * 6)
+            history.observe((int(p.gameProcessId), int(p.currentRound), int(p.battleFrame)), 6, [0] * 4)
         def build(p, resources):
             observe(p)
             return history.observation()
@@ -166,7 +166,7 @@ class LiveTCNStreamTests(unittest.TestCase):
         ingest_frames(runtime, [snapshot])
         self.assertEqual(runtime.temporal_resets, 1)
         self.assertEqual(len(agent.tcn_window), 1)
-        self.assertEqual(agent.tcn_window.previous_action, 432)
+        self.assertEqual(agent.tcn_window.previous_action, 144)
 
     def test_missing_queue_never_falls_back_to_short_prediction(self):
         runtime = LiveRuntime({'environment': {'poll_seconds': .001, 'stale_timeout_seconds': 1}})
@@ -193,7 +193,7 @@ class LiveTCNStreamTests(unittest.TestCase):
                 runtime.control.ready.return_value = True
                 runtime.control.publisher_age_ms.return_value = 0
                 runtime.control.apply_joint.return_value = send_allowed
-                prediction = {'joint_action_id': 192, 'direction': 5, 'buttons': [0] * 6,
+                prediction = {'joint_action_id': 64, 'direction': 5, 'buttons': [0] * 4,
                               'context_frames_used': 32, 'inference_ms': 1.0}
                 runtime.agent = SimpleNamespace(tcn_window=list(range(count)),
                                                 predict=Mock(return_value=(prediction, None)))
@@ -218,7 +218,7 @@ class LiveTCNStreamTests(unittest.TestCase):
                     self.assertEqual(runtime.stale_predictions, 1)
                     self.assertEqual(prediction['execution_status'], 'discarded')
                 elif send_allowed:
-                    runtime.control.apply_joint.assert_called_once_with(192)
+                    runtime.control.apply_joint.assert_called_once_with(64)
                     self.assertEqual(runtime.last_inferred_key, (7, 1, 40))
                 else:
                     self.assertEqual(prediction['execution_status'], 'not_sent')

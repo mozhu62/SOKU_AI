@@ -35,7 +35,7 @@ def raw_shard(count=6):
 
 def normalization():
     result = {key: {"mean": [0.0] * size, "std": [1.0] * size, "count": 1}
-              for key, size in (("state", 18), ("objects", 8), ("cards", 5), ("card_cost", 1), ("optional_state", 4))}
+              for key, size in (("state", 18), ("objects", 8), ("optional_state", 4))}
     result["optional_state"]["counts"] = [0] * 4
     result.update(action_schema=ACTION_SCHEMA, action_shift=1)
     return result
@@ -46,16 +46,12 @@ def tensor_observation(batch=2, length=5):
     result = {"state_continuous": torch.zeros(*shape, 18), "state_categorical": torch.zeros(*shape, 5, dtype=torch.long),
               "tactical_state": torch.zeros(*shape, 9), "state_optional_continuous": torch.zeros(*shape, 4),
               "state_optional_mask": torch.zeros(*shape, 4, dtype=torch.bool),
-              "previous_joint_action_id": torch.full(shape, 432, dtype=torch.long),
+              "previous_joint_action_id": torch.full(shape, 144, dtype=torch.long),
               "previous_action_duration": torch.zeros(*shape, 1)}
     for side in ("self", "opponent"):
         result.update({f"{side}_object_numerical": torch.zeros(*shape, 3, 8),
                        f"{side}_object_categorical": torch.zeros(*shape, 3, 2, dtype=torch.long),
                        f"{side}_object_mask": torch.zeros(*shape, 3, dtype=torch.bool),
-                       f"{side}_skill_categorical": torch.zeros(*shape, 4, 3, dtype=torch.long),
-                       f"{side}_skill_mask": torch.zeros(*shape, 4, dtype=torch.bool),
-                       f"{side}_card_numerical": torch.zeros(*shape, 5),
-                       f"{side}_hand_card_ids": torch.full((*shape, 16), -1, dtype=torch.long),
-                       f"{side}_hand_card_costs": torch.zeros(*shape, 16),
-                       f"{side}_hand_mask": torch.zeros(*shape, 16, dtype=torch.bool)})
+                       f"{side}_skill_categorical": torch.zeros(*shape, 4, dtype=torch.long),
+                       f"{side}_skill_mask": torch.zeros(*shape, 4, dtype=torch.bool)})
     return result

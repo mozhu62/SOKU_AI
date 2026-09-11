@@ -9,28 +9,28 @@ npm --prefix web run build
 python scripts/play.py
 ~~~
 
-打开 http://localhost:8797/，选择 soku_bc_wide_tcn32_joint432_v2 checkpoint，加载后进入对战并点击继续。
+打开 http://localhost:8797/，选择 soku_bc_tcn32_joint144_v1 checkpoint，加载后进入对战并点击继续。
 
 ## 模型加载
 
-加载器要求 algorithm=bc、网络版本、Joint432 schema、observation manifest 和完整 state_dict 全部一致。旧 GRU、旧 256D TCN、CQL、PPO、IQL 或 DQfD 权重都会被拒绝，不会部分迁移。
+加载器要求 algorithm=bc、网络版本、Joint144 schema、observation manifest 和完整 state_dict 全部一致。旧 Joint432、旧 GRU/TCN、CQL、PPO、IQL 或 DQfD 权重都会被拒绝，不会部分迁移。
 
-checkpoint 自带训练 normalization、状态字段清单和方向轴约定。实战 YAML 不选择时序模式，因为当前只有宽 TCN32。
+checkpoint 自带训练 normalization、状态字段清单和方向轴约定。实战 YAML 不选择时序模式，因为当前只有TCN32。
 
 ## 推理链
 
 ~~~text
 DLL LiveFrames.v1 队列
-  → 连续 32 个 State/Skill/Card 帧
-  → 每帧 878D 状态
-  → 当前状态 1024D + TCN 256D + 对象 128D + 128D
-  → 1536D → 1024D → 432 logits
+  → 连续 32 个 State/Skill 配对帧（忽略卡牌和技能等级）
+  → 每帧 228D 状态
+  → 当前状态 256D + TCN 256D + 对象 128D + 128D
+  → 768D → 1024D → 144 logits
   → argmax joint_action_id
-  → direction + combat_mask + card_command
+  → direction + combat_mask
   → Windows 按键状态
 ~~~
 
-模型输出是完整单帧 Controller State。方向和体术、Dash、轻弹幕、重弹幕、切卡、用卡均来自同一个 Joint432 ID，不存在只执行方向头的路径。
+模型输出是完整单帧 Controller State。方向和体术、Dash、轻弹幕、重弹幕均来自同一个 Joint144 ID，不存在只执行方向头的路径。
 
 ## 历史边界
 
@@ -52,9 +52,9 @@ DLL LiveFrames.v1 队列
 
 实战工作台显示：
 
-- 当前 checkpoint、网络版本及宽 TCN32 结构；
+- 当前 checkpoint、网络版本及TCN32 结构；
 - 32 帧窗口的缓存、首末帧号、丢帧和重置原因；
-- 完整 432 logits/概率排序及最终 Joint Action；
+- 完整 144 logits/概率排序及最终 Joint Action；
 - 解码后的方向和全部按钮；
 - 模型请求、实际发送与游戏输入回读；
 - 每局伤害、动作频率、推理 P50/P95 和评估报告。

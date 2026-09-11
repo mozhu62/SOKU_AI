@@ -7,9 +7,9 @@ data:
   cache_gb: 32.0
   vertical_positive_is_down: true
 model:
-  # 固定为宽状态分支 + 独立 32 帧 TCN；旧 GRU checkpoint 不兼容。
+  # 无卡牌、无技能等级实验；228D 当前状态编码为 256D。
   temporal_mode: tcn
-  current_hidden_dim: 1024
+  current_hidden_dim: 256
   object_hidden_dim: 64
   object_set_dim: 128
   temporal_hidden_dim: 256
@@ -17,10 +17,7 @@ model:
   fusion_dim: 1024
   object_embedding_mode: separate
   skill_embedding_dim: 8
-  skill_level_embedding_dim: 4
   previous_action_embedding_dim: 32
-  card_vocab_size: 512
-  card_embedding_dim: 16
 keyframe_weighting:
   enabled: true
   # 切换帧权重可改为 1/2/4/8/16；1 或关闭时等价于原等权 BC。
@@ -46,7 +43,7 @@ training:
   prefetch_batches: 2
   frozen_modules: []
 output:
-  directory: outputs/bc_suika_wide_tcn32_v2
+  directory: outputs/bc_suika_tcn32_joint144
 web:
   # 无 token；SSH 转发访问 localhost:8796，可信局域网可显式改 0.0.0.0。
   host: 127.0.0.1

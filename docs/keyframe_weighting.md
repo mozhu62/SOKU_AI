@@ -1,6 +1,6 @@
 # Keyframe-Focused Weighted CE
 
-此次只修改 BC 的损失归约、相关配置与诊断统计。模型、Joint432、采样、时序输入、镜像、动作对齐、归一化和 best checkpoint 选优规则均不变。
+关键帧加权损失的定义沿用既有实现。当前 Joint144 网络实验只改变状态/动作表示：切换判断使用去掉卡牌后的真实标签；权重、采样、时序上下文、镜像、动作对齐和 best checkpoint 选优规则不变。
 
 ## 配置
 
@@ -17,13 +17,13 @@ keyframe_weighting:
 现有同网络版本 checkpoint 可续训。要对旧模型启用新损失，必须同时指定新 YAML，避免只使用 checkpoint 中的旧配置：
 
 ```text
-python scripts/train.py --config configs/bc_suika.yaml --resume outputs/bc_suika_wide_tcn32_v2/last.pt
+python scripts/train.py --config configs/bc_suika.yaml --resume outputs/bc_suika_tcn32_joint144/last.pt
 ```
 
 ## 边界与损失
 
 - keyframes.build_changepoint_mask(expert_actions, valid_mask, previous_expert_actions) 返回两个与标签同形状的 bool 张量。
-- previous_expert_actions 取自 Dataset 已对齐的 previous_joint_action_id。原有 previous_actions 在完整轨迹上按 episode、有效转移、终局重置历史；起点使用 START=432。
+- previous_expert_actions 取自 Dataset 已对齐的 previous_joint_action_id。原有 previous_actions 在完整轨迹上按 episode、有效转移、终局重置历史；起点使用 START=144。
 - 不在 batch 内重新右移标签。监督段首帧若有真实连续上一帧，仍可作为 changepoint。
 - 无真实历史的有效监督帧：changepoint_valid=False，但仍以权重 1 参与 CE。padding 和无效帧完全排除。
 - learner.classification_parts 保留原有四个位置参数和 (loss, parts) 返回结构，只增加可选关键字参数传递真实历史与加权配置。

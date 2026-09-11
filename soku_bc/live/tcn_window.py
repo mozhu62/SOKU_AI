@@ -45,7 +45,7 @@ class TCNObservationWindow:
             raise ValueError(f"真实连续历史不足 {self.size} 帧（当前 {len(self)}），本次不推理发键")
         pending = [(key, obs) for key, obs in self.rows if key not in self.features]
         if pending:
-            # 只缓存每帧 878D 状态拼接；对象分支只编码当前帧，历史对象不会混进 TCN。
+            # 只缓存每帧 228D 状态拼接；对象分支只编码当前帧，历史对象不会混进 TCN。
             batch = {name: torch.from_numpy(np.stack([obs[name] for _, obs in pending])).to(device)
                      for name in pending[0][1]}
             encoded = model.state_features(batch)
