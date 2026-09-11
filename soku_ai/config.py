@@ -17,6 +17,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError(f"配置文件根节点必须是映射: {config_path}")
 
     result = deepcopy(config)
+    for option in ("vectorized_batches", "packed_transfer"):
+        if option in result.get("training", {}) and type(result["training"][option]) is not bool:
+            raise ValueError(f"training.{option} 必须为布尔值")
     project_root = config_path.parent.parent
     result["_config_path"] = str(config_path)
     result["_project_root"] = str(project_root)

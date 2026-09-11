@@ -43,7 +43,9 @@ def evaluate_offline(
 
     for start in range(0, len(indices), batch_size):
         batch_indices = indices[start : start + batch_size]
-        batch = default_collate([dataset[int(index)] for index in batch_indices])
+        bulk = getattr(dataset, "config", {}).get("training", {}).get("vectorized_batches", True)
+        batch = (dataset.get_batch(batch_indices) if bulk and hasattr(dataset, "get_batch") else
+                 default_collate([dataset[int(index)] for index in batch_indices]))
         batch = move_to_device(batch, device)
         q_values = model(batch["observation"])
         actions = batch["action"]

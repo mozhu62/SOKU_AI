@@ -27,6 +27,8 @@ from .checkpoint import (
 from .data_setup import build_processed_dataset, load_training_normalization
 from .evaluator import evaluate_offline
 from .metrics import action_style_metrics, no_op_metrics, q_metrics
+from .batching import PackedBatchTransfer
+from .timing import TrainingTimings
 from .utils import move_to_device, resolve_device, set_random_seed
 
 
@@ -48,6 +50,8 @@ class DemoTrainer:
         self.seed = int(training["seed"])
         set_random_seed(self.seed)
         self.device = resolve_device(training["device"])
+        self.batch_transfer = PackedBatchTransfer(self.device)
+        self.timings = TrainingTimings(self.device)
         if "cpu_threads" in training:
             torch.set_num_threads(int(training["cpu_threads"]))
         if (resource_data_enabled(config) and not resume_path and not init_from_path
@@ -177,6 +181,7 @@ class DemoTrainer:
             raise ValueError("初始化模型的 normalization 与当前训练集不一致")
 
     def _save_resume_checkpoint(self, name: str) -> None:
+        started = time.perf_counter()
         replay_buffer_state = self.priorities.state_dict()
         replay_buffer_state["sampler_rng_state"] = self.rng.bit_generator.state
         checkpoint = build_checkpoint(
@@ -194,8 +199,10 @@ class DemoTrainer:
             provenance=self.provenance,
         )
         save_checkpoint(checkpoint, self.checkpoint_dir / name)
+        self.writer.add_scalar("performance/save_resume_seconds", time.perf_counter() - started, self.step)
 
     def _save_model_snapshot(self) -> None:
+        started = time.perf_counter()
         snapshot = build_model_snapshot(
             online_network=self.online,
             config=self.config,
@@ -207,6 +214,7 @@ class DemoTrainer:
         )
         name = f"step_{self.step:09d}.pt"
         save_checkpoint(snapshot, self.checkpoint_dir / "snapshots" / name)
+        self.writer.add_scalar("performance/save_snapshot_seconds", time.perf_counter() - started, self.step)
 
     def _log_train(
         self,
@@ -278,6 +286,7 @@ class DemoTrainer:
             )
 
     def _evaluate(self) -> dict[str, Any]:
+        started = time.perf_counter()
         if self.validation_dataset is None:
             raise RuntimeError("当前配置没有验证集，不能执行离线验证")
         training = self.config["training"]
@@ -295,19 +304,26 @@ class DemoTrainer:
             if isinstance(value, (int, float)):
                 self.writer.add_scalar(f"validation/{key}", value, self.step)
         self.online.train()
+        self.writer.add_scalar("performance/validation_seconds", time.perf_counter() - started, self.step)
         return metrics
 
     def _prepare_batch(self, sample: Any) -> tuple[dict[str, Any], torch.Tensor, np.ndarray]:
-        # 同一分片的样本连续读取，降低随机访问造成的 CPU cache miss。
-        shard_ids = self.train_dataset.index_shards[sample.indices]
-        order = np.argsort(shard_ids, kind="stable")
-        ordered_indices = sample.indices[order]
-        batch = default_collate(
-            [self.train_dataset[int(index)] for index in ordered_indices]
-        )
-        batch = move_to_device(batch, self.device)
-        weights = torch.from_numpy(sample.weights[order]).to(self.device)
-        return batch, weights, ordered_indices
+        with self.timings.phase("batch_cpu"):
+            # 保留旧有稳定排序及 IS 权重对应关系，重复抽中的样本不合并。
+            shard_ids = self.train_dataset.index_shards[sample.indices]
+            order = np.argsort(shard_ids, kind="stable")
+            ordered_indices = sample.indices[order]
+            bulk = bool(self.config["training"].get("vectorized_batches", True))
+            batch = (self.train_dataset.get_batch(ordered_indices)
+                     if bulk and hasattr(self.train_dataset, "get_batch") else
+                     default_collate([self.train_dataset[int(index)] for index in ordered_indices]))
+            batch["importance_weights"] = torch.from_numpy(sample.weights[order])
+        packed = bool(self.config["training"].get("packed_transfer", True))
+        with self.timings.phase("pack_cpu"):
+            prepared = self.batch_transfer.prepare(batch) if packed else None
+        with self.timings.phase("transfer", gpu=True):
+            batch = self.batch_transfer.transfer(prepared) if packed else move_to_device(batch, self.device)
+        return batch, batch.pop("importance_weights"), ordered_indices
 
     def train(self, num_steps: int | None = None) -> None:
         rl = self.config["rl"]
@@ -324,13 +340,15 @@ class DemoTrainer:
         last_log_step = self.step
         try:
             while self.step < total_steps:
+                self.timings.begin(sample_gpu=(self.step + 1) % log_interval == 0)
                 beta = linear_beta(
                     self.step,
                     beta_start=float(rl["prioritized_replay_beta_start"]),
                     beta_end=float(rl["prioritized_replay_beta_end"]),
                     anneal_steps=int(rl["prioritized_replay_beta_anneal_steps"]),
                 )
-                sample = self.priorities.sample(batch_size, beta, self.rng)
+                with self.timings.phase("per_sample"):
+                    sample = self.priorities.sample(batch_size, beta, self.rng)
                 batch, weights, ordered_indices = self._prepare_batch(sample)
                 discounts = torch.full_like(batch["reward"], float(rl["gamma"]))
 
@@ -340,42 +358,46 @@ class DemoTrainer:
                     dtype=torch.float16,
                     enabled=self.amp_enabled,
                 ):
-                    q_values = self.online(batch["observation"])
-                    bootstrap_observation = concatenate_observations(
-                        (batch["next_observation"], batch["n_step_observation"])
+                    with self.timings.phase("online_forward", gpu=True):
+                        q_values = self.online(batch["observation"])
+                    with self.timings.phase("bootstrap", gpu=True):
+                        bootstrap_observation = concatenate_observations(
+                            (batch["next_observation"], batch["n_step_observation"])
+                        )
+                        bootstrap_targets = double_dqn_target(
+                            self.online,
+                            self.target,
+                            bootstrap_observation,
+                            torch.cat((batch["reward"], batch["n_step_reward"]), dim=0),
+                            torch.cat((batch["done"], batch["n_step_done"]), dim=0),
+                            torch.cat((discounts, batch["n_step_discount"]), dim=0),
+                        )
+                        td1_target, n_target = bootstrap_targets.split(batch_size)
+                    with self.timings.phase("loss", gpu=True):
+                        loss = compute_dqfd_loss(
+                            q_values=q_values,
+                            actions=batch["action"],
+                            td1_targets=td1_target,
+                            n_step_targets=n_target,
+                            is_demo=batch["is_demo"],
+                            importance_weights=weights,
+                            online_network=self.online,
+                            config=rl,
+                            self_actions=batch["observation"]["state_categorical"][:, 0],
+                            sample_weights=batch["training_weight"],
+                        )
+                with self.timings.phase("backward_optimizer", gpu=True):
+                    self.scaler.scale(loss.total).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.online.parameters(), float(training["grad_clip"])
                     )
-                    bootstrap_targets = double_dqn_target(
-                        self.online,
-                        self.target,
-                        bootstrap_observation,
-                        torch.cat((batch["reward"], batch["n_step_reward"]), dim=0),
-                        torch.cat((batch["done"], batch["n_step_done"]), dim=0),
-                        torch.cat((discounts, batch["n_step_discount"]), dim=0),
-                    )
-                    td1_target, n_target = bootstrap_targets.split(batch_size)
-                    loss = compute_dqfd_loss(
-                        q_values=q_values,
-                        actions=batch["action"],
-                        td1_targets=td1_target,
-                        n_step_targets=n_target,
-                        is_demo=batch["is_demo"],
-                        importance_weights=weights,
-                        online_network=self.online,
-                        config=rl,
-                        self_actions=batch["observation"]["state_categorical"][:, 0],
-                        sample_weights=batch["training_weight"],
-                    )
-                self.scaler.scale(loss.total).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.online.parameters(), float(training["grad_clip"])
-                )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.priorities.update_priorities(
-                    ordered_indices,
-                    loss.td_errors.abs().float().cpu().numpy(),
-                )
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                with self.timings.phase("td_readback", gpu=True):
+                    priority_errors = loss.td_errors.abs().float().cpu().numpy()
+                with self.timings.phase("per_update"):
+                    self.priorities.update_priorities(ordered_indices, priority_errors)
 
                 self.step += 1
                 self.epoch = self.step * batch_size // max(len(self.train_dataset), 1)
@@ -387,6 +409,7 @@ class DemoTrainer:
                     interval=int(rl["target_update_interval"]),
                     tau=float(rl["target_soft_tau"]),
                 )
+                self.timings.end()
                 if self.step % log_interval == 0:
                     if self.device.type == "cuda":
                         torch.cuda.synchronize(self.device)
@@ -404,6 +427,22 @@ class DemoTrainer:
                         beta,
                         steps_per_second,
                     )
+                    timing = self.timings.report()
+                    timing["transitions_per_second"] = timing["active_steps_per_second"] * batch_size
+                    for key, value in timing.items():
+                        self.writer.add_scalar(f"performance/{key}", value, self.step)
+                    LOGGER.info(
+                        "性能 active=%.2f step/s transitions=%.0f/s wall=%.2f step/s；主机均值(ms) "
+                        "取数=%.2f 打包=%.2f 搬运提交=%.2f Online=%.2f Bootstrap=%.2f "
+                        "Loss=%.2f 反向/优化=%.2f TD回读等待=%.2f PER采样/回写=%.2f/%.2f",
+                        timing["active_steps_per_second"], timing["transitions_per_second"], steps_per_second,
+                        *(timing[f"host_{name}_ms"] for name in ("batch_cpu", "pack_cpu", "transfer", "online_forward",
+                          "bootstrap", "loss", "backward_optimizer", "td_readback", "per_sample", "per_update")),
+                    )
+                    if self.device.type == "cuda":
+                        LOGGER.info("CUDA 日志步采样(ms)：%s", " ".join(
+                            f"{key.removeprefix('gpu_sample_')}={value:.2f}"
+                            for key, value in timing.items() if key.startswith("gpu_sample_")))
                     last_log_time = now
                     last_log_step = self.step
                 eval_interval = int(training["eval_interval"])

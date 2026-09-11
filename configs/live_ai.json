@@ -5,14 +5,20 @@
   "focus_delay_ms": 300,
   "emergency_pause_key": "F10",
   "control_enabled": true,
+  "player_side": "left",
+  "cpu_threads": 1,
+  "max_observation_age_ms": 100,
+  "max_action_lag_frames": 4,
+  "idle_guard_enabled": true,
+  "idle_guard_max_frames": 60,
   "key_bindings": {
-    "left": "LEFT",
-    "right": "RIGHT",
-    "up": "UP",
-    "down": "DOWN",
-    "a": "Z",
-    "b": "X",
-    "c": "C",
-    "d": "A"
+    "left": "A",
+    "right": "D",
+    "up": "W",
+    "down": "S",
+    "a": "J",
+    "b": "I",
+    "c": "L",
+    "d": "K"
   }
 }

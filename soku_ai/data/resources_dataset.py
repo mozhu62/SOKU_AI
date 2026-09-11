@@ -101,3 +101,96 @@ class ResourceReplayDataset(ProcessedReplayDataset):
                                                             shard[f"{side}_object_offsets"][frame])
                                                         for side in ("self", "opponent")), dtype=torch.long))
         return result
+
+    def _observations_many(self, shard, frames):
+        count = len(frames)
+        history_rows = frames[:, None] + np.arange(1 - self.history_len, 1)
+        inside = history_rows >= shard["episode_start"][frames, None]
+        safe_rows = np.maximum(history_rows, 0)
+        history_mask = inside & shard["history_valid"][safe_rows]
+        observation = {
+            "state_continuous": shard["state_continuous"][frames],
+            "state_categorical": shard["state_categorical"][frames],
+            "history_numerical": np.where(history_mask[..., None], shard["history_numerical"][safe_rows], 0),
+            "history_categorical": np.where(history_mask[..., None], shard["history_categorical"][safe_rows], CATEGORICAL_PADDING_VALUE),
+            "history_mask": history_mask,
+        }
+        for side in ("self", "opponent"):
+            offsets = shard[f"{side}_object_offsets"]
+            starts, ends = offsets[frames], offsets[frames + 1]
+            mask = np.arange(3) < (ends - starts)[:, None]
+            rows = starts[:, None] + np.arange(3)
+            numerical = np.zeros((count, 3, 8), np.float32)
+            categorical = np.full((count, 3, 2), CATEGORICAL_PADDING_VALUE, np.int64)
+            numerical[mask] = shard[f"{side}_object_numerical"][rows[mask]]
+            categorical[mask] = shard[f"{side}_object_categorical"][rows[mask]]
+            observation.update({f"{side}_object_numerical": numerical,
+                                f"{side}_object_categorical": categorical, f"{side}_object_mask": mask})
+        return observation
+
+    def get_batch(self, indices):
+        """按分片批量 gather；保持输入顺序及重复索引，不改变 PER 的抽样分布。"""
+        indices = np.asarray(indices, np.int64)
+        if indices.ndim != 1 or not len(indices):
+            raise ValueError("批量索引必须为非空一维数组")
+        if np.any(indices < 0) or np.any(indices >= len(self)):
+            raise IndexError("批量索引越界")
+        shard_ids = self.index_shards[indices]
+        result = None
+        for shard_id in np.unique(shard_ids):
+            positions = np.flatnonzero(shard_ids == shard_id)
+            frames = self.index_frames[indices[positions]].astype(np.int64)
+            shard = self._load_shard(int(shard_id))
+            size = len(frames)
+            # 用 float64 按原先顺序累计，最后转 float32，与逐条 Python float 回报一致。
+            rewards, discounts = np.zeros(size, np.float64), np.ones(size, np.float64)
+            terminals, active = np.zeros(size, bool), np.ones(size, bool)
+            final_frames = frames.copy()
+            # PER 可能每个分片只抽一条；避免为这种情况创建 N 步小数组循环。
+            if size == 1:
+                rewards[0], discounts[0], terminals[0], final_frames[0] = self._n_step(shard, int(frames[0]))
+            for offset in range(self.n_step if size > 1 else 0):
+                rows = frames + offset
+                active &= rows < len(shard["actions"]) - 1
+                eligible = np.flatnonzero(active)
+                active[eligible] &= shard["transition_valid"][rows[eligible]]
+                eligible = np.flatnonzero(active)
+                if not len(eligible):
+                    break
+                selected = rows[eligible]
+                rewards[eligible] += discounts[eligible] * shard["rewards"][selected].astype(np.float64)
+                discounts[eligible] *= self.gamma
+                final_frames[eligible] = selected + 1
+                terminals[eligible] = shard["dones"][selected]
+                active[eligible] &= ~terminals[eligible]
+            # 三种状态一起构造，终局导致的重复状态只 gather 一次；模型计算顺序不变。
+            unique_frames, inverse = np.unique(np.concatenate((frames, frames + 1, final_frames)), return_inverse=True)
+            observations = self._observations_many(shard, unique_frames)
+            batch = {name: {key: value[inverse[i * size:(i + 1) * size]] for key, value in observations.items()}
+                     for i, name in enumerate(("observation", "next_observation", "n_step_observation"))}
+            batch.update(action=shard["actions"][frames].astype(np.int64),
+                         reward=shard["rewards"][frames].astype(np.float32), done=shard["dones"][frames].astype(bool),
+                         n_step_reward=rewards.astype(np.float32), n_step_discount=discounts.astype(np.float32),
+                         n_step_done=terminals, is_demo=np.ones(size, bool),
+                         training_weight=(shard["training_weights"][frames].astype(np.float32)
+                                          if "training_weights" in shard else np.ones(size, np.float32)),
+                         round_outcome=(shard["round_outcomes"][frames].astype(np.int8)
+                                        if "round_outcomes" in shard else np.zeros(size, np.int8)))
+            if self.evaluation_metadata:
+                batch.update(active_weather=shard["state_categorical"][frames, 4].astype(np.int64),
+                             object_count=sum(shard[f"{side}_object_offsets"][frames + 1] -
+                                              shard[f"{side}_object_offsets"][frames] for side in ("self", "opponent")).astype(np.int64))
+            if result is None:
+                def allocate(value):
+                    return {k: allocate(v) for k, v in value.items()} if isinstance(value, dict) else np.empty((len(indices), *value.shape[1:]), value.dtype)
+                result = allocate(batch)
+            def scatter(destination, source):
+                for key, value in source.items():
+                    if isinstance(value, dict):
+                        scatter(destination[key], value)
+                    else:
+                        destination[key][positions] = value
+            scatter(result, batch)
+        def tensors(value):
+            return {k: tensors(v) for k, v in value.items()} if isinstance(value, dict) else torch.from_numpy(value)
+        return tensors(result)

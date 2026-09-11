@@ -50,10 +50,9 @@ class LiveObservationBuilder:
         normalization_payload: Mapping[str, object],
     ) -> None:
         if config["data"].get("format") == "resources_v4":
-            # 旧 DLL 观察构造器仍使用旧列序，不能把新模型交给它静默推理。
+            # 新旧输入有不同列序，运行器根据模型版本选择观察构造器。
             raise ValueError(
-                "resources_v4 DQfD 已支持离线训练/验证，尚未接入此旧版实战观察构造器；"
-                "请勿使用旧实战入口加载新版模型。旧模型的实战功能不受影响。"
+                "resources_v4 模型应使用 ResourceLiveObservationBuilder，不能直接调用旧观察构造器"
             )
         data_config = config["data"]
         self.suika_character_id = int(data_config["suika_character_id"])

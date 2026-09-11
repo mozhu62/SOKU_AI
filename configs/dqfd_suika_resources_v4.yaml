@@ -86,3 +86,6 @@ training:
   tensorboard_dir: runs/dqfd_resources_v4
   phase_name: dqfd_resources_v4
   num_workers: 0
+  # 保留逐条路径作为数值对照；不提前抽取下一批，保持 PER 回写时序。
+  vectorized_batches: true
+  packed_transfer: true

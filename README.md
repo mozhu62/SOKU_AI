@@ -14,9 +14,19 @@ python scripts/train_dqfd_demo.py --config configs/dqfd_suika_resources_v4.yaml
 
 新版当前状态为 **27 个数值/标志 + 5 个类别，embedding 后 115D → 256D**；32 帧历史为 **每帧 11 个数值 + 4 个类别**；每侧最多 3 个对象。输出仍为原 DQfD 的 144 个前后相对方向 + ABCD 完整按键组合，不是 BC 的 Joint144 编号。
 
-新版输入尺寸不同，须随机初始化，不能加载旧 DQfD 权重。模型输出独立保存至 `checkpoints/dqfd_resources_v4`。旧模型、旧配置和旧数据未删除。旧实战观察构造器尚未适配新版，加载时会明确拒绝，不能直接用它测新版模型。
+新版输入尺寸不同，须随机初始化，不能加载旧 DQfD 权重。模型输出独立保存至 `checkpoints/dqfd_resources_v4`。旧模型、旧配置和旧数据未删除。实战端已按 checkpoint 版本选择观察构造器，新版读取 DLL 的 LiveFrames.v1 真实帧队列；见 [新版实战启动说明](docs/live_resources_v4.md)。
 
 完整字段、网络结构、启动/续训指令、兼容边界和备份说明：[resources-v4 适配说明](docs/dqfd_resources_v4.md)。本次只交付源码与回归用例，未运行测试、编译、训练或对局。
+
+训练端已加入按分片批量取数、按 dtype 合并设备搬运和分段耗时，保持 PER 回写后再采样。开启/回退及日志解读见 [训练性能说明](docs/dqfd_training_performance.md)。现有 resources-v4 checkpoint 无需重训即可续训。
+
+Windows 本机实战（先将服务器模型复制到本地对应目录）：
+
+```powershell
+python scripts/run_live_ai.py --checkpoint checkpoints/dqfd_resources_v4/last.pt
+```
+
+默认控制 1P，WASD 移动、J 体术、I 小弹幕、L 重弹幕、K DASH；F10 暂停松键。需要支持 LiveFrames.v1 的 SokuDataBridge.dll，新版会等待 32 帧真实历史后开始推理。
 
 ## 以下为旧 CSV / observation-v1 说明
 

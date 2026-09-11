@@ -22,6 +22,11 @@ def load_live_settings(path: str | Path) -> dict[str, Any]:
 
 def find_latest_checkpoint(project_root: Path) -> Path:
     checkpoint_root = project_root / "checkpoints"
+    resource_root = checkpoint_root / "dqfd_resources_v4"
+    resource_candidates = [p for p in (resource_root / "last.pt",) if p.is_file()]
+    resource_candidates.extend((resource_root / "snapshots").glob("step_*.pt"))
+    if resource_candidates:
+        return max(resource_candidates, key=lambda path: path.stat().st_mtime_ns).resolve()
     snapshot_dirs = (
         checkpoint_root / "aggressive_v2" / "snapshots",
         checkpoint_root / "noop_finetune" / "snapshots",
@@ -43,7 +48,7 @@ def find_latest_checkpoint(project_root: Path) -> Path:
     existing = [path for path in last_candidates if path.is_file()]
     if existing:
         return max(existing, key=lambda path: path.stat().st_mtime_ns).resolve()
-    return last_candidates[-1].resolve()
+    return (resource_root / "last.pt").resolve()
 
 
 class LiveAiApp:
@@ -64,6 +69,12 @@ class LiveAiApp:
             poll_interval_ms=int(settings.get("poll_interval_ms", 2)),
             focus_delay_ms=int(settings.get("focus_delay_ms", 300)),
             emergency_pause_key=emergency_key,
+            player_side=str(settings.get("player_side", "left")),
+            cpu_threads=int(settings.get("cpu_threads", 1)),
+            max_observation_age_ms=int(settings.get("max_observation_age_ms", 100)),
+            max_action_lag_frames=int(settings.get("max_action_lag_frames", 4)),
+            idle_guard_enabled=bool(settings.get("idle_guard_enabled", True)),
+            idle_guard_max_frames=int(settings.get("idle_guard_max_frames", 60)),
         )
         configured_checkpoint = checkpoint_override or str(settings.get("checkpoint", ""))
         if configured_checkpoint:
@@ -81,6 +92,8 @@ class LiveAiApp:
         self.control_enabled_var = tk.BooleanVar(
             value=bool(settings.get("control_enabled", True))
         )
+        self.idle_enabled_var = tk.BooleanVar(value=bool(settings.get("idle_guard_enabled", True)))
+        self.idle_frames_var = tk.StringVar(value=str(settings.get("idle_guard_max_frames", 60)))
         default_bindings = KeyBindings.from_mapping(settings.get("key_bindings", {}))
         self.key_vars = {
             name: tk.StringVar(value=value)
@@ -102,6 +115,10 @@ class LiveAiApp:
                 "keys",
                 "latency",
                 "history",
+                "schema",
+                "readback",
+                "raw_action",
+                "idle_guard",
             )
         }
         self._last_log_key: tuple[str, str] | None = None
@@ -165,6 +182,14 @@ class LiveAiApp:
                 row=1, column=column, padx=3
             )
 
+        idle_frame = ttk.Frame(settings_frame)
+        idle_frame.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(idle_frame, text="防持续站桩（全松键）", variable=self.idle_enabled_var).pack(side=tk.LEFT)
+        ttk.Label(idle_frame, text="上限游戏帧").pack(side=tk.LEFT, padx=(8, 4))
+        ttk.Spinbox(idle_frame, from_=1, to=600, textvariable=self.idle_frames_var, width=6).pack(side=tk.LEFT)
+        ttk.Button(idle_frame, text="应用", command=self._on_idle_guard_changed).pack(side=tk.LEFT, padx=8)
+        ttk.Label(idle_frame, text="60 帧约 1 秒；应用后点击继续").pack(side=tk.LEFT)
+
         controls = ttk.Frame(container, padding=(0, 10))
         controls.grid(row=1, column=0, sticky="ew")
         ttk.Button(controls, text="启动 / 继续", command=self._on_start).pack(
@@ -188,8 +213,10 @@ class LiveAiApp:
             ("运行状态", "state", "连接", "connection"),
             ("模型", "model", "设备 / Step", "device"),
             ("游戏 PID", "pid", "帧 / 回合 / 侧别", "frame"),
-            ("模型动作", "action", "实际按键", "keys"),
+            ("选用动作", "action", "实际按键", "keys"),
             ("推理耗时 / FPS", "latency", "历史帧", "history"),
+            ("模型输入版本", "schema", "游戏实际输入", "readback"),
+            ("原始最优动作", "raw_action", "防站桩干预", "idle_guard"),
         )
         for row, (left_label, left_key, right_label, right_key) in enumerate(fields):
             ttk.Label(telemetry, text=left_label).grid(
@@ -250,6 +277,13 @@ class LiveAiApp:
 
     def _on_start(self) -> None:
         try:
+            self.runtime.set_idle_guard(self.idle_enabled_var.get(), int(self.idle_frames_var.get()))
+            selected = Path(self.checkpoint_var.get()).resolve()
+            loaded = self.runtime.latest_telemetry.checkpoint_path
+            if self.runtime.is_running and loaded and selected != Path(loaded).resolve():
+                self.runtime.stop()
+                if self.runtime.is_running:
+                    raise RuntimeError("旧模型仍在停止，请稍后再次开始")
             if not self.runtime.is_running:
                 self.runtime.start(
                     self.checkpoint_var.get(),
@@ -265,6 +299,14 @@ class LiveAiApp:
 
     def _on_pause(self) -> None:
         self.runtime.pause()
+
+    def _on_idle_guard_changed(self) -> None:
+        try:
+            self.runtime.set_idle_guard(self.idle_enabled_var.get(), int(self.idle_frames_var.get()))
+            if self.runtime.is_running:
+                self.runtime.pause("防站桩设置已应用，点击继续生效；不修改模型权重")
+        except (ValueError, tk.TclError) as error:
+            messagebox.showerror("防站桩设置无效", str(error), parent=self.root)
 
     def _on_stop(self) -> None:
         self.runtime.stop()
@@ -291,7 +333,7 @@ class LiveAiApp:
         self.status_vars["model"].set(
             Path(telemetry.checkpoint_path).name if telemetry.checkpoint_path else "-"
         )
-        self.status_vars["device"].set(telemetry.device or "-")
+        self.status_vars["device"].set(f"{telemetry.device or '-'} / Step {telemetry.training_step:,}")
         self.status_vars["step"].set(
             f"{telemetry.device or '-'} / {telemetry.training_step:,}"
         )
@@ -314,7 +356,14 @@ class LiveAiApp:
         self.status_vars["latency"].set(
             f"{telemetry.inference_ms:.2f} ms / {telemetry.inference_fps:.0f} FPS"
         )
-        self.status_vars["history"].set(f"{telemetry.history_count} / 32")
+        self.status_vars["history"].set(
+            f"{telemetry.history_count}/{telemetry.history_target} · 重置 {telemetry.history_resets} · 缺帧 {telemetry.dropped_frames}"
+        )
+        self.status_vars["schema"].set(telemetry.observation_schema or "-")
+        self.status_vars["readback"].set(telemetry.input_readback or "-")
+        self.status_vars["raw_action"].set(str(telemetry.raw_action_id) if telemetry.raw_action_id >= 0 else "-")
+        self.status_vars["idle_guard"].set(
+            f"{'本次已替换' if telemetry.idle_guard_overridden else '本次未替换'} · 累计 {telemetry.idle_guard_interventions} 次")
         for item in self.q_table.get_children():
             self.q_table.delete(item)
         for item in telemetry.top_actions:

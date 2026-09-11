@@ -232,7 +232,7 @@ tensorboard --logdir runs/dqfd_resources_v4 --port 6006
 
 输入与网络版本在加载权重前检查。旧 DQfD 权重拒绝载入新版，也没有静默部分迁移；新版需从随机初始化训练。以后新版自身的 resume 继续核对划分、归一化和预处理版本。
 
-模型 shape 检查脚本和导出样例的张量尺寸已按新旧配置区分，但未实际运行。旧实战 `LiveObservationBuilder` 仍使用旧输入协议，本次未接入新版实时观测；它会明确拒绝新版，避免读错列后仍发送按键。旧模型的原实战入口保留。
+模型 shape 检查脚本和导出样例的张量尺寸已按新旧配置区分，但未实际运行。后续实战接入已完成源码：运行器按 checkpoint 版本选择新版 `ResourceLiveObservationBuilder` 或旧版 `LiveObservationBuilder`，从 checkpoint 读取归一化，不访问服务器数据路径。新版使用 DLL 的 LiveFrames.v1 队列和 32 帧真实连续历史。见 [实战启动与参数说明](live_resources_v4.md)。尚未进行游戏运行验收。
 
 ## 7. 代码位置与后续人工验证
 
