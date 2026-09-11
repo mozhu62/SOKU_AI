@@ -4,7 +4,7 @@ data:
   directory: data/replay_shards_resources_v4_mirror
   split_file: data/replay_shards_resources_v4_mirror/train_val_split.json
   train_fraction: 0.8
-  cache_gb: 4.0
+  cache_gb: 16.0
   vertical_positive_is_down: true
 model:
   # 固定为宽状态分支 + 独立 32 帧 TCN；旧 GRU checkpoint 不兼容。
