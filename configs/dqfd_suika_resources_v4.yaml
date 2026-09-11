@@ -3,8 +3,8 @@ version: 2
 data:
   format: resources_v4
   # 直接使用本机已有 6000 个原版/镜像 NPZ 和固定划分，不复制数据。
-  source_dir: ../soku_cql/data/replay_shards_resources_v4_mirror
-  source_split_file: ../soku_cql/data/replay_shards_resources_v4_mirror/train_val_split.json
+  source_dir: ../replay_shards_resources_v4_mirror
+  source_split_file: ../replay_shards_resources_v4_mirror/train_val_split.json
   split_manifest: data/dqfd_resources_v4/split_manifest.json
   normalization_file: data/dqfd_resources_v4/normalization.json
   reports_dir: reports/dqfd_resources_v4
