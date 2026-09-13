@@ -4,6 +4,7 @@ from collections import deque
 
 import numpy as np
 import torch
+from .streaming_tcn import StreamingTCN
 
 
 class TCNObservationWindow:
@@ -11,18 +12,25 @@ class TCNObservationWindow:
 
     size = 32
 
-    def __init__(self, size=32):
+    def __init__(self, size=32, streaming=True):
         if size not in (32, 256):
             raise ValueError("只支持真实32/256帧窗口")
         self.size = size
         self.rows = deque(maxlen=self.size)
         self.features = {}
         self.previous_action = self.previous_duration = None
+        self.streaming = streaming
+        self.stream = self.stream_key = self.stream_model = self.temporal = None
+        self.processed_frames = 0
+        self.rebuilt = False
 
     def reset(self):
         self.rows.clear()
         self.features.clear()
         self.previous_action = self.previous_duration = None
+        self.stream = self.stream_key = self.stream_model = self.temporal = None
+        self.processed_frames = 0
+        self.rebuilt = False
 
     def __len__(self):
         return len(self.rows)
@@ -46,6 +54,10 @@ class TCNObservationWindow:
     def logits(self, model, device):
         if len(self) != self.size:
             raise ValueError(f"真实连续历史不足 {self.size} 帧（当前 {len(self)}），本次不推理发键")
+        if self.stream_model is not model:
+            self.features.clear()
+            self.stream = self.stream_key = self.temporal = None
+            self.stream_model = model
         pending = [(key, obs) for key, obs in self.rows if key not in self.features]
         if pending:
             # 只缓存每帧 228D 状态拼接；对象分支只编码当前帧，历史对象不会混进 TCN。
@@ -55,9 +67,26 @@ class TCNObservationWindow:
             if encoded.shape != (len(pending), model.memory_dim) or not torch.isfinite(encoded).all():
                 raise ValueError("TCN 历史特征形状不匹配或含 NaN/Inf")
             self.features.update({key: feature for (key, _), feature in zip(pending, encoded.unbind(0))})
-        history = torch.stack([self.features[key] for key, _ in self.rows])[None]
-        temporal = model.tcn(history)[:, -1]
-        current = model.current_encoder.forward_features(history[:, -1])
+        self.rebuilt = False
+        if self.streaming:
+            first = self.rows[0][0]
+            if self.stream_key is None or self.stream_key[:2] != first[:2] or self.stream_key[2] < first[2]-1:
+                # 暂停期间未计算的帧已出窗口时，重建最近完整窗口；不能跳过中间帧继续缓存。
+                self.stream = StreamingTCN(model.tcn)
+                self.stream_key = None
+                self.rebuilt = True
+            fresh = [key for key, _ in self.rows if self.stream_key is None or key[2] > self.stream_key[2]]
+            self.processed_frames = len(fresh)
+            if fresh:
+                chunk = torch.stack([self.features[key] for key in fresh])[None]
+                self.temporal = self.stream.forward(chunk)[:, -1].detach().clone()
+                self.stream_key = fresh[-1]
+            temporal = self.temporal
+        else:
+            history = torch.stack([self.features[key] for key, _ in self.rows])[None]
+            temporal = model.tcn(history)[:, -1]
+            self.processed_frames = self.size
+        current = model.current_encoder.forward_features(self.features[self.key][None])
         latest = {name: torch.from_numpy(value).unsqueeze(0).to(device)
                   for name, value in self.rows[-1][1].items()}
         return model._fuse(current, temporal, model.encode_objects(latest))

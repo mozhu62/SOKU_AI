@@ -11,6 +11,7 @@ export function TemporalStatus({state}:{state:Row}){
       <Stat title="当前观测窗口" value={`${number(capture.buffer_frames,0)} / ${required}`} note={capture.ready?`游戏帧 ${capture.first_frame} — ${capture.last_frame}`:`积累中，满 ${required} 帧才执行模型推理`}/>
       <Stat title="最近一次推理使用" value={prediction?.context_frames_used!=null?`${prediction.context_frames_used} / ${required}`:'尚未推理'} note={prediction?.context_first_frame!=null?`游戏帧 ${prediction.context_first_frame} — ${prediction.observation_frame}；不代表当前缓存`:'不重复旧帧、不用零填充凑满窗口'}/>
       <Stat title="窗口重置" value={number(state.temporal_resets,0)} note={state.temporal_reset_reason||'尚无重置记录'}/>
+      <Stat title="本次 TCN 新计算帧" value={prediction?.tcn_computed_frames!=null?String(prediction.tcn_computed_frames):'尚未推理'} note={`${state.inference_precision??'未记录'} · ${state.streaming_tcn?'增量缓存':'全窗口'}${prediction?.tcn_cache_rebuilt?' · 本次重建缓存':''}；不代表历史视野缩短`}/>
       <Stat title="丢失采集槽" value={number(capture.dropped_slots,0)} note={`累计接收 ${number(capture.received_slots,0)} 个槽；队列容量 ${capture.capacity}`}/>
     </div>
     <p className="notice">暂停或失焦只停止发键，仍采集真实历史。推理稍慢时补收队列中的帧；换局或真正丢帧时重新积累，未满 {required} 帧不发模型动作。完整窗口不等于每秒一定完成 60 次推理。</p>

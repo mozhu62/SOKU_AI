@@ -43,6 +43,8 @@ class EvaluationStatistics:
                          "temporal_capture_policy": f"liveframes_v1_real{model.tcn_window.size}_no_padding",
                          "model_inputs": copy.deepcopy(model.model.spec["inputs"]),
                          "device": str(model.device), "action_selection": model.action_selection,
+                         "inference_precision": model.precision,
+                         "streaming_tcn": model.tcn_window.streaming,
                          "output_semantics": "categorical_logits",
                          "vertical_positive_is_down": self.positive_down,
                          "damage_metric": "同局相邻有效观测的 HP 净扣减，非伤害因果追踪",

@@ -29,6 +29,8 @@ class LiveAgent:
         # BC 包的权重键是 model；不能把 CQL 的 online Q 网络或优化器当作策略加载。
         self.model.load_state_dict(package["model"], strict=True)
         self.model.to(self.device).eval().requires_grad_(False)
+        self.amp = config.get("amp", False) and self.device.type == "cuda"
+        self.precision = "AMP FP16" if self.amp else "FP32"
         self.temporal_mode = self.model.temporal_mode
         if config["environment"]["decision_interval_frames"] != 1:
             raise ValueError("TCN 实战 decision_interval_frames 必须为1，禁止稀疏决策冒充连续帧")
@@ -45,7 +47,7 @@ class LiveAgent:
         if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
             raise ValueError("加载过程中模型文件发生变化，请先复制为固定文件再开始评估")
         self.memory = None
-        self.tcn_window = TCNObservationWindow(self.model.tcn.context_frames)
+        self.tcn_window = TCNObservationWindow(self.model.tcn.context_frames, config.get("streaming_tcn", True))
 
     def reset(self):
         self.memory = None
@@ -63,7 +65,9 @@ class LiveAgent:
         key = (int(payload.gameProcessId), int(payload.currentRound), int(payload.battleFrame))
         if self.tcn_window.key != key:
             raise ValueError("推理帧不对应 TCN 窗口末帧，禁止使用错位历史")
-        logits, memory = self.tcn_window.logits(self.model, self.device), None
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.amp):
+            logits = self.tcn_window.logits(self.model, self.device)
+        memory = None
         previous_id, previous_duration = self.tcn_window.previous_action, self.tcn_window.previous_duration
         if (logits.shape != (1, ACTION_COUNT) or not torch.isfinite(logits).all()
                 or (memory is not None and not torch.isfinite(memory).all())):
@@ -86,6 +90,9 @@ class LiveAgent:
                 "output_semantics": "categorical_logits", "action_selection": self.action_selection,
                 "temporal_mode": self.temporal_mode,
                 "context_frames_used": len(self.tcn_window),
+                "tcn_computed_frames": self.tcn_window.processed_frames,
+                "tcn_cache_rebuilt": self.tcn_window.rebuilt,
+                "streaming_tcn": self.tcn_window.streaming, "inference_precision": self.precision,
                 "context_first_frame": self.tcn_window.rows[0][0][2],
                 "observation_frame": int(payload.battleFrame), "observation_round": int(payload.currentRound),
                 "sample_serial": int(payload.sampleSerial),

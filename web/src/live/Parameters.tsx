@@ -9,6 +9,7 @@ const keyNames:Record<string,string>={up:'上',down:'下',left:'左',right:'右'
 export function Parameters({state}:{state:Row}){
   const config=state.runtime_config||{},signature=JSON.stringify(config)||'{}',[draft,setDraft]=useState<Row>({}),[message,setMessage]=useState('');
   useEffect(()=>{const cfg=JSON.parse(signature);setDraft({device:cfg.device,rounds:cfg.rounds,cpu_threads:cfg.cpu_threads,
+    amp:cfg.amp??false,streaming_tcn:cfg.streaming_tcn??true,
     keyboard:cfg.keyboard||{},difficulty:cfg.environment?.cpu_difficulty_label,
     decision_interval_frames:cfg.environment?.decision_interval_frames,auto_restart:cfg.restart?.enabled});},[signature]);
   const canApply=state.connected&&!state.workbench_busy&&!state.control?.active&&state.state!=='initializing';
@@ -17,6 +18,8 @@ export function Parameters({state}:{state:Row}){
   return <><div className="section-intro"><div><h1>参数与记录</h1><p>沿用工作台配置流程：编辑值与运行值分开，暂停后应用并新建会话。</p></div></div>
     <Card title="实战参数" note="不更改训练损失、网络结构或模型权重；分类选择固定为 argmax，不采样"><div className="form-grid">
       <label className="field">推理设备<input value={draft.device??''} onChange={e=>setDraft({...draft,device:e.target.value})} placeholder="cpu / cuda / cuda:0"/></label>
+      <label className="field"><span>CUDA FP16 autocast</span><input type="checkbox" checked={!!draft.amp} onChange={e=>setDraft({...draft,amp:e.target.checked})}/><small>仅 CUDA 生效；权重仍为 FP32。运行值：{state.inference_precision??'尚未加载'}</small></label>
+      <label className="field"><span>Streaming TCN</span><input type="checkbox" checked={!!draft.streaming_tcn} onChange={e=>setDraft({...draft,streaming_tcn:e.target.checked})}/><small>缓存逐层历史；关闭可对照全窗口计算。应用时重建会话。</small></label>
       <label className="field">CPU 线程数<input type="number" min={1} max={64} value={draft.cpu_threads??2} onChange={e=>setDraft({...draft,cpu_threads:+e.target.value})}/></label>
       <label className="field">完整小局数（0 不限）<input type="number" min={0} max={10000} value={draft.rounds??20} onChange={e=>setDraft({...draft,rounds:+e.target.value})}/></label>
       <label className="field">决策间隔 / 游戏帧<input type="number" min={1} max={1} disabled value={draft.decision_interval_frames??1} onChange={e=>setDraft({...draft,decision_interval_frames:+e.target.value})}/><small>固定为 1；从 DLL 队列补收真实帧，满模型指定的窗口才推理。实际推理频率受性能限制。</small></label>

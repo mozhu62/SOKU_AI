@@ -83,6 +83,8 @@ class LiveRuntime:
                   "prediction": copy.deepcopy(self.last_prediction)}
         if self.agent is not None:
             status.update(step=self.agent.step, device=str(self.agent.device),
+                          inference_precision=self.agent.precision,
+                          streaming_tcn=self.agent.tcn_window.streaming,
                           algorithm="bc", output_semantics="categorical_logits",
                           action_selection=self.agent.action_selection,
                           network_version=self.agent.model.spec["network_version"],

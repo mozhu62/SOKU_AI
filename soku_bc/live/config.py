@@ -14,6 +14,7 @@ from .windows_api import parse_virtual_key
 DEFAULTS = {
     "checkpoint": "outputs/bc_suika_tcn32_joint144/last.pt",
     "device": "cpu", "cpu_threads": 2,
+    "amp": False, "streaming_tcn": True,
     "output": "outputs/evaluations", "rounds": 20,
     "environment": {
         "player_side": "left",
@@ -56,6 +57,8 @@ def load_config(path="configs/live_eval.yaml"):
 
 
 def validate(config):
+    if any(type(config.get(key, default)) is not bool for key, default in (("amp", False), ("streaming_tcn", True))):
+        raise ValueError("amp 和 streaming_tcn 必须是布尔值")
     def integer(value, low, high):
         return type(value) is int and low <= value <= high
 
