@@ -16,7 +16,7 @@ from filelock import FileLock
 from . import checkpoint
 from .action_space import ACTION_SCHEMA, action_catalog
 from .action_diagnostics import DIAGNOSTIC_VERSION, prefixed_history_metrics
-from .config import EDITABLE, resolve, validate, palr_settings
+from .config import EDITABLE, resolve, validate, palr_settings, context_frames_for
 from .dataset import ReplayStore, split_replays
 from .learner import Learner, aggregate_metrics
 from .prefetch import BatchPrefetch
@@ -119,7 +119,7 @@ class Runtime:
                "algorithm": "bc", "label_smoothing": cfg["label_smoothing"],
                "action_schema": ACTION_SCHEMA, "temporal_mode": self.config["model"]["temporal_mode"],
                "network_version": self.learner.model.spec["network_version"],
-               "context_frames": 32 if self.config["model"]["temporal_mode"] == "tcn" else None,
+               "context_frames": context_frames_for(self.config["model"]),
                "prefix_frames": cfg["burn_in"], "module_status": self.learner.model.module_status(),
                "kind": kind, "step": self.step, "stage": self.stage, "time": time.time()}
         with (self.output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
@@ -211,7 +211,7 @@ class Runtime:
             raise ValueError("请先暂停，等待当前更新结束后创建独立实验")
         if (set(values) - {"name", "expected_stage", "expected_output", "confirm"}
                 or values.get("confirm") is not True):
-            raise ValueError("创建实验需要明确确认；当前只支持固定Joint144 / TCN32 的随机初始化独立分支")
+            raise ValueError("创建实验需要明确确认；当前只支持当前Joint144 / TCN窗口 的随机初始化独立分支")
         if values.get("expected_stage") != self.stage or values.get("expected_output") != str(self.output):
             raise ValueError("实验页面已过期，请刷新后重试")
         if self.snapshot()["locked_parameters"]:
@@ -220,8 +220,8 @@ class Runtime:
         if target.exists():
             raise ValueError("实验目录已存在，请填写新名称；不会覆盖现有模型")
         config = copy.deepcopy(self.config)
-        config["model"]["temporal_mode"] = "tcn"
-        config["training"].update(burn_in=31, frozen_modules=[])
+        # 随机对照实验保持当前窗口，不能偷偷从256帧退回32帧。
+        config["training"].update(burn_in=context_frames_for(config["model"])-1, frozen_modules=[])
         config["output"]["directory"] = target.relative_to(resolve(".")).as_posix()
         validate(config)
         self._close_prefetch()
@@ -248,7 +248,7 @@ class Runtime:
                 "parent_run": str(self.output),
                 "parent_step": self.step,
                 "network_version": learner.model.spec["network_version"],
-                "temporal_mode": "tcn",
+                "temporal_mode": config["model"]["temporal_mode"],
                 "shared_initialization_seed": config["seed"],
             })
         except Exception as error:
@@ -266,11 +266,11 @@ class Runtime:
         self.timings = {key: 0.0 for key in self.timings}
         with self.lock:
             self.history.clear()
-        self.publish(config=config, config_source="工作台Joint144 / TCN32 随机实验", output=str(target),
+        self.publish(config=config, config_source="工作台Joint144 / 当前TCN窗口随机实验", output=str(target),
                      step=0, updates=0, samples=0, stage=0, best=None, latest_train=None, latest_validation=None,
                      timings=self.timings, locked_parameters=[], error=None, **self._model_state(),
                      last_saved={"path": str(target / "last.pt"), "step": 0, "time": time.time()},
-                     message="Joint144 / TCN32 随机实验已创建；原模型已保存。点击开始才训练新分支。")
+                     message="Joint144 / 当前TCN窗口随机实验已创建；原模型已保存。点击开始才训练新分支。")
         self._write_comparison()
 
     def _handle_commands(self):

@@ -33,17 +33,20 @@ class TemporalConvEncoder(nn.Module):
     context_frames = 32
     output_dim = 256
 
-    def __init__(self, input_dim: int, hidden_dim: int = 256, output_dim: int = 256):
+    def __init__(self, input_dim: int, hidden_dim: int = 256, output_dim: int = 256, context_frames=32):
         super().__init__()
+        if context_frames not in (32, 256):
+            raise ValueError("仅支持明确版本的 TCN32/256")
+        self.context_frames = context_frames
         if output_dim != hidden_dim:
             raise ValueError("当前 TCN32 要求 hidden_dim 与 output_dim 一致")
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.projection = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU())
-        # stem 增加一个历史间隔；四个双卷积残差块再增加 30 个间隔，最终严格覆盖 32 帧。
+        # 感受野为 1+1+2*sum(dilation)，四/七个双卷积块分别覆盖32/256帧。
         self.stem = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=2)
         self.stem_norm = nn.LayerNorm(hidden_dim)
-        self.blocks = nn.ModuleList(CausalResidualBlock(hidden_dim, dilation) for dilation in (1, 2, 4, 8))
+        self.blocks = nn.ModuleList(CausalResidualBlock(hidden_dim, 2**i) for i in range(context_frames.bit_length()-2))
 
     def forward(self, features, mask=None):
         if mask is None:

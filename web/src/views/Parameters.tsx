@@ -25,7 +25,7 @@ export function Parameters({state}:{state:Row}){
       <div className="check-grid">{schema.modules.map((name:string)=><label className="check-label" key={name}><input type="checkbox" checked={frozen.includes(name)||!!schema.module_status?.[name]?.bypassed} disabled={busy||locks.includes('frozen_modules')||!!schema.module_status?.[name]?.bypassed} onChange={event=>setFrozen(event.target.checked?[...frozen,name]:frozen.filter(x=>x!==name))}/>{moduleLabels[name]||name}{schema.module_status?.[name]?.bypassed?' · 已旁路':''}</label>)}</div>
       <label className="check-label"><input type="checkbox" disabled={disabled} checked={locks.includes('frozen_modules')} onChange={e=>setLocks(e.target.checked?[...locks,'frozen_modules']:locks.filter(x=>x!=='frozen_modules'))}/>锁定冻结设置</label><p className="muted">勾选表示冻结；实际生效模块可在「学习诊断」中检查权重变化。参数锁需要单独保存。</p>
     </Card>
-    <Card title="固定配置与网络结构" note="TCN32 上下文固定为 31 帧历史＋当前帧；旧 GRU/旧 256D TCN checkpoint 不能续训。序列长度、AMP、缓存和划分在 YAML 中修改后重启"><pre>{JSON.stringify(schema.config,null,2)}</pre></Card>
+    <Card title="固定配置与网络结构" note="TCN 上下文由模型版本指定（32/256帧）；旧 GRU/旧 256D TCN checkpoint 不能续训。序列长度、AMP、缓存和划分在 YAML 中修改后重启"><pre>{JSON.stringify(schema.config,null,2)}</pre></Card>
     <Card title="已保存模型" note="last.pt 用于续训；best.pt 为当前阶段最低验证 NLL（未平滑交叉熵）"><p className="muted">{state.output}</p><DataTable rows={models} columns={[{key:'name',title:'相对输出目录'},{key:'size_mb',title:'MB'},{key:'modified',title:'保存时间',render:v=>new Date(v*1000).toLocaleString()}]}/></Card>
   </>;
 }

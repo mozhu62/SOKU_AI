@@ -1,14 +1,14 @@
 seed: 42
 data:
   # 只读复用已有 NPZ，不复制数据、不导入 CQL 代码；服务器可改为自己的相对数据目录。
-  directory: data/replay_shards_resources_v4_mirror
-  split_file: data/replay_shards_resources_v4_mirror/train_val_split.json
+  directory: ../replay_shards_resources_v4_mirror
+  split_file: ../replay_shards_resources_v4_mirror/train_val_split.json
   train_fraction: 0.8
   cache_gb: 32.0
   vertical_positive_is_down: true
 model:
   # 无卡牌、无技能等级实验；228D 当前状态编码为 256D。
-  temporal_mode: tcn
+  temporal_mode: tcn256
   current_hidden_dim: 256
   object_hidden_dim: 64
   object_set_dim: 128
@@ -21,13 +21,13 @@ model:
 keyframe_weighting:
   enabled: true
   # 切换帧权重可改为 1/2/4/8/16；1 或关闭时等价于原等权 BC。
-  changepoint_weight: 16.0
+  changepoint_weight: 32.0
 training:
-  device: auto
+  device: cuda
   total_steps: 100000
   batch_size: 32
   sequence_length: 32
-  burn_in: 31
+  burn_in: 255
   replays_per_batch: 4
   learning_rate: 0.0001
   # 标准 BC 对每个有效帧的真实完整动作做交叉熵；0 不做标签平滑。
@@ -43,7 +43,7 @@ training:
   prefetch_batches: 2
   frozen_modules: []
 output:
-  directory: outputs/bc_suika_tcn32_joint144
+  directory: outputs/bc_suika_tcn256_joint144
 web:
   # 无 token；SSH 转发访问 localhost:8796，可信局域网可显式改 0.0.0.0。
   host: 127.0.0.1

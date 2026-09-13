@@ -51,7 +51,7 @@ def comparison_catalog(current):
                 row = json.loads(path.read_text(encoding="utf-8"))
                 if (isinstance(row, dict) and row.get("version") == COMPARISON_VERSION
                         and isinstance(row.get("output"), str) and isinstance(row.get("name"), str)
-                        and row.get("temporal_mode") == "tcn" and isinstance(row.get("validation"), list)):
+                        and row.get("temporal_mode") in ("tcn", "tcn256") and isinstance(row.get("validation"), list)):
                     rows.append(row)
             except (OSError, ValueError):
                 continue

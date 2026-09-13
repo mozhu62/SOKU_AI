@@ -21,7 +21,7 @@ export function Experiments({state}:{state:Row}){
   }));
   const chartRows=[...points.values()].sort((a,b)=>a.step-b.step);
   const tables=runs.map(run=>{const val=run.validation?.at(-1)||{};return {...run,
-    architecture:'TCN32',
+    architecture:run.temporal_mode==='tcn256'?'TCN256':'TCN32',
     comparable:run.conditions_hash===currentHash?'条件一致':'条件不同，请查看明细',
     nll:val.nll,top1:val.joint_accuracy,change:val.val_action_change_accuracy,val_step:val.step,
   };});
@@ -36,18 +36,18 @@ export function Experiments({state}:{state:Row}){
     finally{setBusy(false);}
   };
 
-  return <><div className="section-intro"><div><h1>TCN32 独立实验</h1><p>固定使用新网络结构；新分支随机初始化，不迁移旧权重。</p></div></div>
+  return <><div className="section-intro"><div><h1>TCN 独立实验</h1><p>固定使用新网络结构；新分支随机初始化，不迁移旧权重。</p></div></div>
     <div className="stats-grid">
       <Stat title="当前状态分支" value="228D → 256D" note="单层 Linear + LayerNorm + SiLU"/>
-      <Stat title="历史状态分支" value="32 帧 → 256D" note="每个残差块含两层因果卷积"/>
+      <Stat title="历史状态分支" value={`${state.model_spec?.temporal?.context_frames??'未记录'} 帧 → 256D`} note="每个残差块含两层因果卷积"/>
       <Stat title="最终融合" value="768D → 1024D → 144" note="256 当前 + 256 时序 + 128×2 对象"/>
-      <Stat title="前导 / 监督长度" value={`${active.prefix_frames??'—'} / ${active.sequence_length??'—'} 帧`} note="每个监督帧最多读取当前帧及前 31 帧"/>
+      <Stat title="前导 / 监督长度" value={`${active.prefix_frames??'—'} / ${active.sequence_length??'—'} 帧`} note="每个监督帧只读取模型感受野内的历史，不读取未来"/>
     </div>
     <Card title="创建独立随机分支" note="原模型先保存；新实验创建后保持暂停。已有目录会被拒绝，不覆盖 last.pt。">
       <div className="inline-controls">
         <label htmlFor="experiment-name">实验名<input id="experiment-name" value={name} maxLength={64} placeholder="joint144_tcn32_seed42_a" disabled={busy} onChange={event=>setName(event.target.value)}/></label>
         <ConfirmButton disabled={busy||!state.connected||state.state!=='paused'||!name||!!state.locked_parameters?.length}
-          title={`创建TCN32 随机实验 ${name}`}
+          title={`创建TCN 随机实验 ${name}`}
           description="保存当前模型，在 outputs/temporal_experiments 下创建全新的模型和优化器。不会加载旧权重、修改 NPZ 或自动开始训练。"
           onConfirm={create}>保存当前并创建实验</ConfirmButton>
       </div>
@@ -55,7 +55,7 @@ export function Experiments({state}:{state:Row}){
       {(message||error)&&<p role="status" className="feedback">{message||error}</p>}
     </Card>
     <Card title="实验比较" note="默认展示当前组及最近一组；按相同训练步、有效训练帧和验证条件比较。">
-      <div className="check-grid">{runs.map(run=><label className="check-label" key={run.output}><input type="checkbox" checked={checked.some(item=>item.output===run.output)} onChange={event=>{const previous=checked.map(item=>item.output);setSelected(event.target.checked?[...previous,run.output].slice(-4):previous.filter(item=>item!==run.output));}}/>{run.name} · TCN32</label>)}</div>
+      <div className="check-grid">{runs.map(run=><label className="check-label" key={run.output}><input type="checkbox" checked={checked.some(item=>item.output===run.output)} onChange={event=>{const previous=checked.map(item=>item.output);setSelected(event.target.checked?[...previous,run.output].slice(-4):previous.filter(item=>item!==run.output));}}/>{run.name} · TCN</label>)}</div>
       <DataTable rows={tables} columns={[
         {key:'name',title:'实验'},{key:'architecture',title:'结构'},{key:'step',title:'训练步'},
         {key:'updates',title:'实际更新'},{key:'samples',title:'累计监督帧'},{key:'val_step',title:'验证步'},

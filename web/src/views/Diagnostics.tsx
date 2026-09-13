@@ -8,7 +8,7 @@ import {PalrDiagnostics} from '../components/PalrDiagnostics';
 export const moduleLabels:Row={
   current_encoder:'当前状态 · 228D→256D',
   object_encoder:'双方对象集合 · 128D+128D',
-  tcn:'历史状态 TCN32 · 228D×32→256D',
+  tcn:'历史状态 TCN · 228D×历史窗口→256D',
   fusion:'联合融合 · 768D→1024D',
   policy_head:'Joint144 分类头',
 };

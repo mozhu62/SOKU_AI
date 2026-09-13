@@ -25,7 +25,7 @@ export default function App(){
       <Button variant="secondary" disabled={!connected||terminal||busy||state.state==='initializing'} onClick={()=>void act('save')}><Save size={15}/>保存版本</Button>
       <Button variant="secondary" disabled={!connected||busy||state.state!=='paused'} onClick={()=>void act('validate')}><CheckCheck size={15}/>验证</Button>
       <ConfirmButton disabled={!connected||terminal} title="停止并保存 BC 模型" description="等待当前更新结束，保存 last.pt。正式训练数据不会修改。" onConfirm={()=>command('stop')}><Square size={15}/>停止</ConfirmButton>
-    </div></header><div className="connection-strip"><span>{connected?'已连接':'连接中断，正在重连；网页断开不会停止训练'}</span><span>228D→256D 当前状态 · TCN32→256D · Joint144 离线 BC</span></div>
+    </div></header><div className="connection-strip"><span>{connected?'已连接':'连接中断，正在重连；网页断开不会停止训练'}</span><span>228D→256D 当前状态 · TCN{state.model_spec?.temporal?.context_frames??'未记录'}→256D · Joint144 离线 BC</span></div>
     {(message||state.error)&&<div className="feedback" role="status">{state.error||message}<button aria-label="关闭提示" onClick={()=>setMessage('')}>×</button></div>}
     <div className="runtime-message">{state.message||'等待运行状态'}</div>
     <main key={state.output}>{tab==='overview'?<Overview state={state}/>:tab==='diagnostics'?<Diagnostics state={state}/>:tab==='experiments'?<Experiments state={{...state,connected}}/>:tab==='dataset'?<Dataset state={state}/>:<Parameters state={state}/>}</main>

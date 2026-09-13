@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import logging
 from pathlib import Path
 
 import torch
@@ -19,7 +20,7 @@ def load(path: Path):
     if not isinstance(package, dict) or package.get("algorithm") != "bc":
         raise ValueError("仅接受 BC checkpoint；CQL/PPO/IQL 权重不能作为 BC 续训模型，请从随机初始化开始")
     version = package.get("network_version")
-    if version != NETWORK_VERSION:
+    if version not in (NETWORK_VERSION, "soku_bc_tcn256_joint144_v1"):
         raise ValueError(
             "BC checkpoint schema 不兼容：当前版本为 228D 状态、256D 当前编码和 Joint144 输出，"
             "已移除卡牌输入/输出和技能等级；旧 Joint432 权重不允许部分加载。"
@@ -89,7 +90,15 @@ def restore(package, learner, split):
         raise ValueError("checkpoint 的网络/动作/输入结构或固定数据划分不兼容")
     learner.model.load_state_dict(package["model"], strict=True)
     learner.optimizer.load_state_dict(package["optimizer"])
-    learner.scaler.load_state_dict(package["scaler"])
+    scaler_state = package["scaler"]
+    if not isinstance(scaler_state, dict):
+        raise ValueError("GradScaler 状态必须为字典")
+    if learner.scaler.is_enabled():
+        if scaler_state:
+            learner.scaler.load_state_dict(scaler_state)
+        else:
+            # CPU 迁移包没有缩放历史；使用新 CUDA 缩放器，不加载空字典。
+            logging.getLogger(__name__).warning("CPU/非AMP来源：初始化新的CUDA GradScaler，权重正常恢复")
     learner.apply_settings(learner.config)
     torch.set_rng_state(package["rng_cpu"].cpu().to(torch.uint8))
     if learner.device.type == "cuda" and len(package["rng_cuda"]) == torch.cuda.device_count():
