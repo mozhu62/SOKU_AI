@@ -12,9 +12,9 @@ spell_system:
   enabled: true
   character_id: 0
 spell_training:
-  active_none_weight: 0.5
+  active_none_weight: 0.05
   spell_use_weight: 100.0
-  max_weight: 10.0
+  max_weight: 100.0
   loss_weight: 1.0
 model:
   temporal_mode: tcn256
