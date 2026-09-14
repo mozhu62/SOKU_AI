@@ -1,8 +1,8 @@
 # 卡表随项目提供；采集、训练和推理不再依赖游戏动态导出。
 seed: 42
 data:
-  directory: ../replay_cards_reimu_training_mirror
-  split_file: ../replay_cards_reimu_training_mirror/train_val_split.json
+  directory: ../replay_cards_reimu_chicky_mirror
+  split_file: ../replay_cards_reimu_chicky_mirror/train_val_split.json
   # 训练只读取已有清单，不读取玩家名单，也不重新划分。
   split_mode: fixed
   # 与高速配置一致；服务器需为数据缓存和训练进程预留足够内存。
