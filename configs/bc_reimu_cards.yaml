@@ -49,7 +49,7 @@ training:
 keyframe_weighting:
   enabled: true
   # 本次只对齐训练性能设置，不把萃香的 32 倍损失权重迁移到灵梦实验。
-  changepoint_weight: 4.0
+  changepoint_weight: 32.0
 palr:
   enabled: false
 output:
