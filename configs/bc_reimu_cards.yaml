@@ -9,7 +9,7 @@ data:
   cache_gb: 32.0
   vertical_positive_is_down: true
 spell_system:
-  enabled: true
+  enabled: false
   character_id: 0
 spell_training:
   active_none_weight: 0.05
