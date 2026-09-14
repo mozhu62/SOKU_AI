@@ -56,8 +56,9 @@ def network_spec(cfg, spell_system=None):
         },
     }
     if system_settings(spell_system)["enabled"]:
-        result["network_version"] += "_spell_v2"
+        result["network_version"] += "_spell_v3"
         result["spell"] = spell_spec(spell_system)
+        result["fusion"]["input_dim"] += result["spell"]["state_dim"]
     return result
 
 
@@ -104,7 +105,8 @@ class BCNetwork(nn.Module):
             cfg["temporal_output_dim"],
             context_frames=context_frames_for(cfg),
         )
-        self.fusion = FusionEncoder(cfg)
+        self.card_count = len(self.spell_system["cards"]) if self.spell_enabled else 0
+        self.fusion = FusionEncoder(cfg, self.card_count)
         self.policy_head = nn.Linear(cfg["fusion_dim"], ACTION_COUNT)
         self.memory_dim = self.current_encoder.input_dim
         self.spec = network_spec(cfg, self.spell_system)
@@ -114,7 +116,6 @@ class BCNetwork(nn.Module):
         nn.init.zeros_(self.policy_head.bias)
         if self.spell_enabled:
             self.spell_branch = SpellBranch(cfg["fusion_dim"], len(self.spell_system["cards"]))
-            self.spell_branch.reset_residual()
 
     def module_groups(self):
         names = ("current_encoder", "object_encoder", "tcn", "fusion", "policy_head")
@@ -171,12 +172,15 @@ class BCNetwork(nn.Module):
 
     def _fuse(self, current, temporal, objects, available=None, *, return_spell=False):
         feature = torch.cat((current, temporal, *objects), dim=-1)
-        shared = self.fusion(feature)
-        spell_logits = None
         if self.spell_enabled:
             if available is None:
                 raise ValueError("符卡模型缺少当前可用集合，禁止默认全零后继续推理")
-            shared, spell_logits = self.spell_branch(shared, available)
+            if available.dtype != torch.bool or available.shape != (*feature.shape[:-1], self.card_count):
+                raise ValueError("spell_available_mask 必须为与特征对齐的 bool [B,L,N] 或 [B,N]")
+            # 原始可用集合直接参与共享融合：灵梦为 768+43=811，不做编码或残差注入。
+            feature = torch.cat((feature, available.to(feature.dtype)), dim=-1)
+        shared = self.fusion(feature)
+        spell_logits = self.spell_branch(shared) if self.spell_enabled else None
         logits = self.policy_head(shared)
         return (logits, spell_logits) if return_spell else logits
 

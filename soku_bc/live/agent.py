@@ -38,6 +38,7 @@ class LiveAgent:
         from .spell_macro import SpellMacro
         self.card_macro = SpellMacro()
         self.cards = self.spell_settings.get('cards', [])
+        self.card_status = '等待卡牌快照' if self.model.spell_enabled else '当前模型没有卡牌头'
         if self.model.spec != package["spec"]:
             raise ValueError("模型输入/Joint Action schema 不兼容；只接受新版 144-way BC 模型")
         # BC 包的权重键是 model；不能把 CQL 的 online Q 网络或优化器当作策略加载。
@@ -78,6 +79,7 @@ class LiveAgent:
         self.tcn_window.reset()
         self.card_macro.reset()
         self.card_observation = self.card_snapshot = None
+        self.card_status = '等待卡牌快照' if self.model.spell_enabled else '当前模型没有卡牌头'
 
     def prepare_cards(self, payload):
         if not self.model.spell_enabled:
@@ -92,6 +94,8 @@ class LiveAgent:
         frame = self.card_client.read_matching(payload)
         if frame is None:
             self.card_macro.reset('missing_card_frame')
+            self.card_snapshot = None
+            self.card_status = 'Cards.v1 未匹配当前帧，暂停发键；检查 DLL 版本与连接'
             return False
         side = self.builder.side
         player = payload.left if side == 'left' else payload.right
@@ -110,7 +114,18 @@ class LiveAgent:
             frozenset(captured.after.cardIds[:captured.after.count]), True,
             confirmed_event_serial=int(payload.sampleSerial),
             confirmed_card_id=int(captured.usedCardIds[0]) if captured.eventValid and captured.eventCount == 1 else None)
+        self.card_status = '卡牌快照已匹配'
         return True
+
+    def card_diagnostics(self):
+        # 当前执行状态独立于最近预测；暂停后不能把历史宏指令当作仍在执行。
+        snapshot = self.card_snapshot
+        return {'enabled': self.model.spell_enabled, 'status': self.card_status,
+                'catalog': self.cards, 'frame': snapshot.frame if snapshot else None,
+                'hand_ids': list(snapshot.hand_ids) if snapshot else None,
+                'available_ids': sorted(snapshot.available_ids) if snapshot else None,
+                'selected_id': snapshot.selected_id if snapshot else None,
+                'macro_state': self.card_macro.state, 'target_card_id': self.card_macro.target}
 
     def apply_prediction(self, control, prediction):
         if not self.model.spell_enabled:
@@ -147,7 +162,7 @@ class LiveAgent:
                 raise ValueError('卡牌头输出非有限值，停止控制')
             values = card_logits[0].float().cpu()
             selected = int(values.argmax())
-            spell_output = {'spell_class': selected,
+            spell_output = {'spell_class': selected, 'spell_logits': values.tolist(),
                 'spell_card_id': None if selected == 0 else self.cards[selected - 1]['id'],
                 'spell_card_name': 'NONE' if selected == 0 else self.cards[selected - 1]['name'],
                 'spell_probabilities': values.softmax(-1).tolist(),

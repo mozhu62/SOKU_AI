@@ -82,6 +82,7 @@ class LiveRuntime:
                   "temporal_resets": self.temporal_resets, "temporal_reset_reason": self.temporal_reset_reason,
                   "prediction": copy.deepcopy(self.last_prediction)}
         if self.agent is not None:
+            status['cards'] = self.agent.card_diagnostics()
             status.update(step=self.agent.step, device=self.agent.device_label,
                           inference_precision=self.agent.precision,
                           streaming_tcn=self.agent.tcn_window.streaming,

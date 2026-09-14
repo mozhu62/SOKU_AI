@@ -117,6 +117,7 @@ class ObjectSetEncoder(nn.Module):
 
 
 class FusionEncoder(nn.Sequential):
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, card_count: int = 0) -> None:
         input_dim = cfg["current_hidden_dim"] + cfg["temporal_output_dim"] + 2 * cfg["object_set_dim"]
+        input_dim += card_count
         super().__init__(*hidden_mlp(input_dim, cfg["fusion_dim"], layers=1))

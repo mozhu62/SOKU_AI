@@ -22,10 +22,10 @@ def load(path: Path):
         raise ValueError("仅接受 BC checkpoint；CQL/PPO/IQL 权重不能作为 BC 续训模型，请从随机初始化开始")
     version = package.get("network_version")
     if version not in (NETWORK_VERSION, "soku_bc_tcn256_joint144_v1",
-                       NETWORK_VERSION + "_spell_v2", "soku_bc_tcn256_joint144_v1_spell_v2"):
+                       NETWORK_VERSION + "_spell_v3", "soku_bc_tcn256_joint144_v1_spell_v3"):
         raise ValueError(
             "BC checkpoint schema 不兼容：当前版本为 228D 状态、256D 当前编码和 Joint144 输出，"
-            "可选卡牌意图双头使用 spell_v2 协议；旧 Joint432/旧实验符卡权重不能部分加载。"
+            "卡牌双头使用 spell_v3 原始可用集合拼接协议；旧 spell_v2 残差模型不能续训或推理。"
             "请去掉 --resume，从随机初始化开始并使用新输出目录"
         )
     if package.get("spec", {}).get("network_version") != version:
@@ -46,6 +46,8 @@ def load(path: Path):
         raise ValueError("checkpoint 的时序结构与网络版本不一致")
     if package["spec"].get("spell") != canonical.get("spell"):
         raise ValueError("checkpoint 符卡角色、类别顺序或输入协议不一致")
+    if package["spec"].get("fusion") != canonical["fusion"]:
+        raise ValueError("checkpoint 共享融合输入维度或结构不一致")
     if "temporal" in package["spec"] and package["spec"]["temporal"] != canonical["temporal"]:
         raise ValueError("checkpoint 时序窗口或记忆语义不兼容")
     if "temporal" not in package["spec"]:
@@ -68,11 +70,20 @@ def initialize_combat(model, path):
     if package["spec"] != network_spec(model.spec["model"]):
         raise ValueError("旧 Combat 的 TCN 窗口、状态输入或网络尺寸不匹配")
     original = model.state_dict()
+    # 显式单头初始化允许扩展融合层：旧 768 列原样复制，新卡牌列置零；不是续训。
+    transferred = dict(package["model"])
+    old_weight = transferred['fusion.0.weight']
+    new_weight = original['fusion.0.weight'].clone()
+    if old_weight.shape != (new_weight.shape[0], new_weight.shape[1] - model.card_count):
+        raise ValueError('旧 Combat 融合层不能按卡牌维度扩展')
+    new_weight.zero_()
+    new_weight[:, :old_weight.shape[1]] = old_weight
+    transferred['fusion.0.weight'] = new_weight
     combat = {key: value for key, value in original.items() if not key.startswith("spell_branch.")}
-    if set(combat) != set(package["model"]) or any(
-            combat[key].shape != package["model"][key].shape for key in combat):
+    if set(combat) != set(transferred) or any(
+            combat[key].shape != transferred[key].shape for key in combat):
         raise ValueError("Combat 参数键或形状不一致，拒绝部分迁移")
-    original.update(package["model"])
+    original.update(transferred)
     model.load_state_dict(original, strict=True)
     logging.getLogger(__name__).info("Combat 初始化来源 %s；迁移参数键：%s；新建符卡参数键：%s；优化器重新初始化",
                                     path, sorted(combat), sorted(key for key in original if key.startswith("spell_branch.")))

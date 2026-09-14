@@ -62,7 +62,8 @@ def training_settings(settings=None):
 def spell_spec(settings):
     cfg = system_settings(settings)
     return {"data_version": SPELL_DATA_VERSION, "character_id": cfg["character_id"],
-            "cards": cfg["cards"], "state_dim": len(cfg["cards"]), "embedding_dim": 32,
+            "cards": cfg["cards"], "state_dim": len(cfg["cards"]),
+            "fusion_mode": "raw_availability_concat_before_shared_mlp",
             "classes": [{"id": None, "name": "NONE"}, *cfg["cards"]],
             "temporal_input": False, "availability_source": "SokuLib.canActivateCard",
             "event_source": "SokuLib.handInfo.usedCards", "output_semantics": "card_intent"}
@@ -71,21 +72,10 @@ def spell_spec(settings):
 class SpellBranch(nn.Module):
     def __init__(self, feature_dim, card_count):
         super().__init__()
-        self.encoder = nn.Sequential(nn.Linear(card_count, 32), nn.SiLU(), nn.Linear(32, 32), nn.SiLU())
-        self.fusion = nn.Linear(feature_dim + 32, feature_dim)
         self.head = nn.Sequential(nn.Linear(feature_dim, 128), nn.SiLU(), nn.Linear(128, card_count + 1))
 
-    def reset_residual(self):
-        # 新建分支先不扰动旧 Combat 特征；训练后两个头都能利用当前可用卡资源。
-        nn.init.zeros_(self.fusion.weight)
-        nn.init.zeros_(self.fusion.bias)
-
-    def forward(self, feature, available):
-        if available.dtype != torch.bool or available.shape != (*feature.shape[:-1], self.encoder[0].in_features):
-            raise ValueError("spell_available_mask 必须是与当前特征对齐的 bool [B,L,N] 或 [B,N]")
-        resource = self.encoder(available.to(feature.dtype))
-        shared = feature + self.fusion(torch.cat((feature, resource), -1))
-        return shared, self.head(shared)
+    def forward(self, feature):
+        return self.head(feature)
 
 
 

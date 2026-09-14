@@ -3,6 +3,7 @@ import {Card,DataTable,Stat} from '../components/common';
 import {JointFrequency} from '../components/JointActions';
 import {number,percent,type Row} from '../lib/utils';
 import {ResourceInputs} from './ResourceInputs';
+import {CardDecision} from './CardDecision';
 
 export const directions=['左下','下','右下','左','无方向','右','左上','上','右上'];
 export const buttonNames=['体术 A','DASH D','轻弹幕 B','重弹幕 C'];
@@ -33,7 +34,8 @@ export function Battle({state}:{state:Row}){
       <Stat title="当前实际发送按键" value={pressed?.join(' + ')||'无'} note={p.execution_reason??'加载后点击继续，切回游戏'}/>
       <Stat title="游戏实际动作 / 动作帧" value={`${number(game.actual_action,0)} / ${number(game.action_frame,0)}`} note={`回读方向 ${game.readback?.[0]??'未记录'} · 游戏帧 ${game.frame??'未记录'}`}/>
     </div>
-    <Card title="ABCD 按键核对（模型不输出卡牌）" note={`最近模型观测：小局 ${p.observation_round??'未记录'} / 帧 ${p.observation_frame??'未记录'}；暂停后保留最近输出，不代表仍在按键`}>
+    <CardDecision state={state}/>
+    <Card title="ABCD 按键核对（卡牌宏可覆盖 Combat 指令）" note={`最近模型观测：小局 ${p.observation_round??'未记录'} / 帧 ${p.observation_frame??'未记录'}；暂停后保留最近输出，不代表仍在按键`}>
       <DataTable rows={buttonRows} columns={[{key:'name',title:'游戏输入'},{key:'key',title:'键盘映射'},{key:'model',title:'模型要求',render:held},{key:'sent',title:'当前发送状态',render:held},{key:'readback',title:'游戏实际回读',render:held}]}/>
       <p className="muted">按键成功发送不保证招式成功释放。受击、硬直、距离及取消条件可能使按键无法出招；状态见游戏 actionId 与回读。F10 或失焦会松开当前按键。</p>
     </Card>

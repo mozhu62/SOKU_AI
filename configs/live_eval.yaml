@@ -13,7 +13,7 @@ environment:
   # 主模式 2 是人机；正常游戏子模式可为 0/1，只有子模式 2 是 REP。
   active_match_states: [2]
   cpu_difficulty_label: 未确认，请按游戏设置填写
-  # REP 训练以每游戏帧为一步；默认同样每帧决策，不使用宏动作。
+  # Combat 每帧决策；带卡牌头的模型由独立卡牌宏执行切卡和用卡。
   decision_interval_frames: 1
   max_inference_lag_frames: 6
   max_memory_gap_frames: 6
@@ -31,7 +31,7 @@ keyboard:
   dash: K
   light_projectile: I
   heavy_projectile: L
-  # 本实验只控制方向与 ABCD，不发送切卡或用卡。
+  # 卡牌宏使用游戏组合键 A+B 切卡、B+C 用卡，复用上述按键映射。
 restart:
   enabled: true
   confirm_key: Z

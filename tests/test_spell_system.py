@@ -37,10 +37,10 @@ class SpellTests(unittest.TestCase):
     def test_no_available_combat_still_backpropagates(self):
         branch = SpellBranch(8, 2)
         feature = torch.randn(2, 8, requires_grad=True)
-        shared, spell = branch(feature, torch.zeros(2, 2, dtype=torch.bool))
+        spell = branch(feature)
         loss, _ = spell_loss(spell, torch.zeros(2, dtype=torch.long), torch.zeros(2, 2, dtype=torch.bool),
                              torch.ones(2, dtype=torch.bool), torch.ones(2, dtype=torch.bool))
-        shared.square().sum().add(loss).backward()
+        feature.square().sum().add(loss).backward()
         self.assertGreater(float(feature.grad.abs().sum()), 0)
         self.assertEqual(float(branch.head[0].weight.grad.abs().sum()), 0)
 
