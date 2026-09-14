@@ -33,6 +33,9 @@ def split_replays(config, progress, cancelled=lambda: False):
     from .player_split import split_settings, player_partition
     settings = split_settings(config)
     root, path = resolve(config["data"]["directory"]), resolve(config["data"]["split_file"])
+    fixed = config['data'].get('split_mode') == 'fixed'
+    if fixed and not path.is_file():
+        raise FileNotFoundError(f'固定划分清单不存在：{path}；请同步已有清单，不会自动重新划分')
     files = sorted(root.rglob("*.npz"))
     if len(files) < 2:
         raise ValueError("至少需要两份完整 NPZ 才能划分训练/验证集；请先完成 REP 转换")
@@ -46,11 +49,11 @@ def split_replays(config, progress, cancelled=lambda: False):
         entries[file.relative_to(root).as_posix()] = sha
     if path.exists():
         result = json.loads(path.read_text(encoding="utf-8"))
-        if result.get("files") != entries or result.get("seed") != config["seed"]:
+        if result.get("files") != entries or (not fixed and result.get("seed") != config["seed"]):
             raise ValueError("数据或 seed 与固定划分不一致；请为新数据指定新的 split_file 和输出目录")
-        if result.get('player_split') != settings:
+        if not fixed and result.get('player_split') != settings:
             raise ValueError('玩家划分规则或小号映射已变化，请使用新的 split_file 和输出目录')
-        if settings is None and result.get("train_fraction") != 0.8:
+        if not fixed and settings is None and result.get("train_fraction") != 0.8:
             raise ValueError("已保存的数据划分不是 8:2")
     elif settings is not None:
         result = {'version': 2, 'seed': config['seed'], 'files': entries,

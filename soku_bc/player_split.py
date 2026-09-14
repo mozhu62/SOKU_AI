@@ -11,8 +11,11 @@ from .config import resolve
 def split_settings(config):
     data = config['data']
     mode = data.get('split_mode', 'legacy')
-    if mode not in ('legacy', 'per_player'):
-        raise ValueError('data.split_mode 只能为 legacy 或 per_player')
+    if mode not in ('legacy', 'per_player', 'fixed'):
+        raise ValueError('data.split_mode 只能为 legacy、per_player 或 fixed')
+    if mode == 'fixed':
+        # 固定清单模式不读取划分时的外部玩家映射。
+        return {'mode': 'fixed'}
     if mode == 'legacy':
         return None
     fraction = data.get('player_validation_fraction', 0.1)
@@ -24,7 +27,14 @@ def split_settings(config):
         raise ValueError('玩家划分上限或角色 ID 无效')
     aliases = {}
     if data.get('player_aliases_file'):
-        catalog = json.loads(resolve(data['player_aliases_file']).read_text(encoding='utf-8'))
+        alias_path = resolve(data['player_aliases_file'])
+        if not alias_path.is_file():
+            # 不允许悄悄忽略映射，否则同一玩家的小号会被当成不同玩家重新划分。
+            raise FileNotFoundError(
+                f'玩家映射文件不存在：{alias_path}。请同步该 JSON 并修改 '
+                'data.player_aliases_file；已有划分的训练请使用 data.split_mode=fixed。'
+                '相对路径以 BC 项目根目录为基准。')
+        catalog = json.loads(alias_path.read_text(encoding='utf-8-sig'))
         for name, info in catalog.items():
             for uid in info['user_ids']:
                 key = str(uid)

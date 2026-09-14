@@ -2,12 +2,9 @@
 seed: 42
 data:
   directory: ../replay_cards_reimu_training_mirror
-  split_file: ../replay_cards_reimu_training_mirror/train_val_split_reimu_cards.json
-  split_mode: per_player
-  split_character_id: 0
-  player_validation_fraction: 0.1
-  player_validation_max: 30
-  player_aliases_file: ../tools/sokureplays_get/soku_dataset/reimu_expert_players.json
+  split_file: ../replay_cards_reimu_training_mirror/train_val_split.json
+  # 训练只读取已有清单，不读取玩家名单，也不重新划分。
+  split_mode: fixed
   # 与高速配置一致；服务器需为数据缓存和训练进程预留足够内存。
   cache_gb: 32.0
   vertical_positive_is_down: true
