@@ -11,6 +11,7 @@ from .config import NETWORK_VERSION, MODEL_DEFAULTS, network_version_for, palr_s
 from .models import network_spec
 from .action_space import ACTION_SCHEMA
 from .schema import policy_input_manifest
+from .spells import system_settings
 
 
 def load(path: Path):
@@ -20,10 +21,11 @@ def load(path: Path):
     if not isinstance(package, dict) or package.get("algorithm") != "bc":
         raise ValueError("仅接受 BC checkpoint；CQL/PPO/IQL 权重不能作为 BC 续训模型，请从随机初始化开始")
     version = package.get("network_version")
-    if version not in (NETWORK_VERSION, "soku_bc_tcn256_joint144_v1"):
+    if version not in (NETWORK_VERSION, "soku_bc_tcn256_joint144_v1",
+                       NETWORK_VERSION + "_spell_v2", "soku_bc_tcn256_joint144_v1_spell_v2"):
         raise ValueError(
             "BC checkpoint schema 不兼容：当前版本为 228D 状态、256D 当前编码和 Joint144 输出，"
-            "已移除卡牌输入/输出和技能等级；旧 Joint432 权重不允许部分加载。"
+            "可选卡牌意图双头使用 spell_v2 协议；旧 Joint432/旧实验符卡权重不能部分加载。"
             "请去掉 --resume，从随机初始化开始并使用新输出目录"
         )
     if package.get("spec", {}).get("network_version") != version:
@@ -38,9 +40,12 @@ def load(path: Path):
     if required - package.keys():
         raise ValueError(f"BC checkpoint 缺少字段：{sorted(required - package.keys())}")
     model = {**MODEL_DEFAULTS, **package["spec"]["model"]}
-    if version != network_version_for(model):
+    spell = system_settings(package["config"].get("spell_system"))
+    canonical = network_spec(model, spell)
+    if version != canonical["network_version"]:
         raise ValueError("checkpoint 的时序结构与网络版本不一致")
-    canonical = network_spec(model)
+    if package["spec"].get("spell") != canonical.get("spell"):
+        raise ValueError("checkpoint 符卡角色、类别顺序或输入协议不一致")
     if "temporal" in package["spec"] and package["spec"]["temporal"] != canonical["temporal"]:
         raise ValueError("checkpoint 时序窗口或记忆语义不兼容")
     if "temporal" not in package["spec"]:
@@ -52,6 +57,25 @@ def load(path: Path):
     # PALR 没有权重；旧同架构 checkpoint 缺少此段时明确恢复为关闭状态。
     package["config"]["palr"] = palr_settings(package["config"].get("palr"))
     package["spec"] = canonical
+    return package
+
+
+def initialize_combat(model, path):
+    """显式迁移旧 Combat 权重；不迁移优化器或假装续训成功。"""
+    package = load(path)
+    if not model.spell_enabled or package["spec"].get("spell"):
+        raise ValueError("init_combat_from 仅允许旧单头 BC → 新符卡模型")
+    if package["spec"] != network_spec(model.spec["model"]):
+        raise ValueError("旧 Combat 的 TCN 窗口、状态输入或网络尺寸不匹配")
+    original = model.state_dict()
+    combat = {key: value for key, value in original.items() if not key.startswith("spell_branch.")}
+    if set(combat) != set(package["model"]) or any(
+            combat[key].shape != package["model"][key].shape for key in combat):
+        raise ValueError("Combat 参数键或形状不一致，拒绝部分迁移")
+    original.update(package["model"])
+    model.load_state_dict(original, strict=True)
+    logging.getLogger(__name__).info("Combat 初始化来源 %s；迁移参数键：%s；新建符卡参数键：%s；优化器重新初始化",
+                                    path, sorted(combat), sorted(key for key in original if key.startswith("spell_branch.")))
     return package
 
 

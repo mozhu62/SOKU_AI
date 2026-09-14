@@ -1,0 +1,63 @@
+# 卡表随项目提供；采集、训练和推理不再依赖游戏动态导出。
+seed: 42
+data:
+  directory: ../replay_cards_reimu_training_mirror
+  split_file: ../replay_cards_reimu_training_mirror/train_val_split_reimu_cards.json
+  split_mode: per_player
+  split_character_id: 0
+  player_validation_fraction: 0.1
+  player_validation_max: 30
+  player_aliases_file: ../tools/sokureplays_get/soku_dataset/reimu_expert_players.json
+  # 与高速配置一致；服务器需为数据缓存和训练进程预留足够内存。
+  cache_gb: 32.0
+  vertical_positive_is_down: true
+spell_system:
+  enabled: true
+  character_id: 0
+spell_training:
+  active_none_weight: 0.5
+  spell_use_weight: 5.0
+  max_weight: 10.0
+  loss_weight: 1.0
+model:
+  temporal_mode: tcn256
+  current_hidden_dim: 256
+  object_hidden_dim: 64
+  object_set_dim: 128
+  temporal_hidden_dim: 256
+  temporal_output_dim: 256
+  fusion_dim: 1024
+  object_embedding_mode: separate
+  skill_embedding_dim: 8
+  previous_action_embedding_dim: 32
+training:
+  device: cuda
+  total_steps: 100000
+  batch_size: 32
+  sequence_length: 32
+  burn_in: 255
+  replays_per_batch: 4
+  learning_rate: 0.0001
+  label_smoothing: 0.0
+  max_grad_norm: 10.0
+  weight_decay: 0.0001
+  log_interval: 20
+  save_interval: 1000
+  validation_interval: 1000
+  validation_batches: 20
+  cpu_threads: 4
+  amp: true
+  prefetch_batches: 2
+  frozen_modules: []
+keyframe_weighting:
+  enabled: true
+  # 本次只对齐训练性能设置，不把萃香的 32 倍损失权重迁移到灵梦实验。
+  changepoint_weight: 4.0
+palr:
+  enabled: false
+output:
+  directory: outputs/bc_reimu_cards_tcn256
+web:
+  host: 127.0.0.1
+  port: 8796
+  port_attempts: 30

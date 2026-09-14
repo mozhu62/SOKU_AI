@@ -82,7 +82,7 @@ class LiveRuntime:
                   "temporal_resets": self.temporal_resets, "temporal_reset_reason": self.temporal_reset_reason,
                   "prediction": copy.deepcopy(self.last_prediction)}
         if self.agent is not None:
-            status.update(step=self.agent.step, device=str(self.agent.device),
+            status.update(step=self.agent.step, device=self.agent.device_label,
                           inference_precision=self.agent.precision,
                           streaming_tcn=self.agent.tcn_window.streaming,
                           algorithm="bc", output_semantics="categorical_logits",
@@ -298,6 +298,11 @@ class LiveRuntime:
                     if 0 <= key[2] - self.last_inferred_key[2] < env["decision_interval_frames"]:
                         self._publish()
                         continue
+                if not self.agent.prepare_cards(p):
+                    self.control.release()
+                    self.message = '等待同帧卡牌数据'
+                    self._publish()
+                    continue
                 prediction, next_memory = self.agent.predict(p, snapshot.resources)
                 # 预测与实际发键分别展示：即使观测过期而没有执行，也保留本次网络输出供排查。
                 prediction.update(execution_status="pending", execution_reason="等待发键前安全检查")
@@ -323,7 +328,10 @@ class LiveRuntime:
                     self.message = "推理期间观测已变化，丢弃旧动作并追最新帧"
                     self._publish()
                     continue
-                if self.control.apply_joint(prediction["joint_action_id"]):
+                if not self.agent.prepare_cards(latest):
+                    self.control.release()
+                    continue
+                if self.agent.apply_prediction(self.control, prediction):
                     prediction.update(execution_status="sent", execution_reason="已发送，游戏实际输入请看回读")
                     self.agent.memory = next_memory
                     self.last_inferred_key = key
@@ -331,8 +339,9 @@ class LiveRuntime:
                     self.stats.decision(prediction)
                     if self.pending:
                         self.unconfirmed += 1
-                    self.pending = {"key": key, "serial": int(latest.sampleSerial),
-                                    "action": (prediction["direction"], prediction["buttons"])}
+                    self.pending = None if prediction.get('card_macro', {}).get('kind', 'combat') != 'combat' else {
+                        "key": key, "serial": int(latest.sampleSerial),
+                        "action": (prediction["direction"], prediction["buttons"])}
                     self.message = "固定模型实战中；仅推理与统计，不训练、不覆盖 checkpoint"
                 else:
                     prediction.update(execution_status="not_sent", execution_reason="控制未就绪或游戏失焦，未发送")
@@ -352,8 +361,11 @@ class LiveRuntime:
                 self.control.close()
             if client:
                 client.close()
+            if self.agent and self.agent.card_client is not None:
+                self.agent.card_client.close()
             try:
                 if self.stats:
+                    self.stats.close()
                     self.stats.cut("评估会话停止")
                     self.stats.save()
             except Exception as exc:

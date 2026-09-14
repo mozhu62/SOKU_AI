@@ -16,9 +16,10 @@ from .nn_modules import (
 )
 from .schema import policy_input_manifest
 from .temporal import TemporalConvEncoder
+from .spells import system_settings, spell_spec, SpellBranch
 
 
-def network_spec(cfg):
+def network_spec(cfg, spell_system=None):
     unknown = set(cfg) - set(MODEL_DEFAULTS)
     if unknown:
         raise ValueError(f"模型包含旧架构或未知字段：{sorted(unknown)}")
@@ -27,7 +28,7 @@ def network_spec(cfg):
     context = context_frames_for(cfg)
     if input_dim != 228:
         raise ValueError(f"当前网络版本固定 228D 状态输入，实际 schema 生成 {input_dim}D")
-    return {
+    result = {
         "network_version": network_version_for(cfg),
         "model": copy.deepcopy(cfg),
         "inputs": policy_input_manifest(),
@@ -54,18 +55,24 @@ def network_spec(cfg):
             "output_dim": ACTION_COUNT,
         },
     }
+    if system_settings(spell_system)["enabled"]:
+        result["network_version"] += "_spell_v2"
+        result["spell"] = spell_spec(spell_system)
+    return result
 
 
 class BCNetwork(nn.Module):
     """精简状态分支加独立 TCN32 的 Joint144 行为克隆网络。"""
 
-    def __init__(self, cfg: dict, network_version: str | None = None):
+    def __init__(self, cfg: dict, network_version: str | None = None, *, spell_system=None):
         super().__init__()
         unknown = set(cfg) - set(MODEL_DEFAULTS)
         if unknown:
             raise ValueError(f"模型包含旧架构或未知字段：{sorted(unknown)}")
         cfg = {**MODEL_DEFAULTS, **cfg}
-        expected_version = network_version_for(cfg)
+        self.spell_system = system_settings(spell_system)
+        self.spell_enabled = self.spell_system["enabled"]
+        expected_version = network_spec(cfg, self.spell_system)["network_version"]
         if network_version is not None and network_version != expected_version:
             raise ValueError(
                 f"BC 网络结构不兼容：{network_version}，当前配置需要 {expected_version}；"
@@ -100,18 +107,25 @@ class BCNetwork(nn.Module):
         self.fusion = FusionEncoder(cfg)
         self.policy_head = nn.Linear(cfg["fusion_dim"], ACTION_COUNT)
         self.memory_dim = self.current_encoder.input_dim
-        self.spec = network_spec(cfg)
+        self.spec = network_spec(cfg, self.spell_system)
 
         self.apply(initialize)
         nn.init.orthogonal_(self.policy_head.weight, gain=0.01)
         nn.init.zeros_(self.policy_head.bias)
+        if self.spell_enabled:
+            self.spell_branch = SpellBranch(cfg["fusion_dim"], len(self.spell_system["cards"]))
+            self.spell_branch.reset_residual()
 
     def module_groups(self):
         names = ("current_encoder", "object_encoder", "tcn", "fusion", "policy_head")
+        if self.spell_enabled:
+            names += ("spell_branch",)
         return {name: getattr(self, name) for name in names}
 
     def module_status(self):
         active = set(active_modules(self.spec["model"]))
+        if self.spell_enabled:
+            active.add("spell_branch")
         return {
             name: {
                 "active": name in active,
@@ -155,9 +169,16 @@ class BCNetwork(nn.Module):
         mask[:, :burn_in] = prefix_mask
         return torch.cat((prefix, features[:, burn_in:]), dim=1), mask
 
-    def _fuse(self, current, temporal, objects):
+    def _fuse(self, current, temporal, objects, available=None, *, return_spell=False):
         feature = torch.cat((current, temporal, *objects), dim=-1)
-        return self.policy_head(self.fusion(feature))
+        shared = self.fusion(feature)
+        spell_logits = None
+        if self.spell_enabled:
+            if available is None:
+                raise ValueError("符卡模型缺少当前可用集合，禁止默认全零后继续推理")
+            shared, spell_logits = self.spell_branch(shared, available)
+        logits = self.policy_head(shared)
+        return (logits, spell_logits) if return_spell else logits
 
     def forward(self, obs, burn_in: int = 0, burn_lengths=None, *, return_aux=False):
         state = self.state_features(obs)
@@ -166,17 +187,27 @@ class BCNetwork(nn.Module):
         current = self.current_encoder.forward_features(main_state)
         temporal = self.tcn(state, history_mask)[:, burn_in:]
         objects = self.encode_objects(self._main_observation(obs, burn_in))
-        logits = self._fuse(current, temporal, objects)
+        available = obs["spell_available_mask"][:, burn_in:] if self.spell_enabled else None
+        logits, spell_logits = self._fuse(current, temporal, objects, available, return_spell=True)
         # PALR 只读取监督段的 TCN 输出；默认推理路径和所有网络参数保持原样。
-        return (logits, {"temporal_feature": temporal}) if return_aux else logits
+        aux = {"temporal_feature": temporal}
+        if self.spell_enabled:
+            aux["spell_logits"] = spell_logits
+        return (logits, aux) if return_aux else logits
 
     @torch.no_grad()
     def act(self, obs, memory=None):
+        if self.spell_enabled:
+            (combat, spell), memory = self.step_logits(obs, memory, return_spell=True)
+            choice = spell.argmax(-1)
+            ids = torch.tensor([-1, *[card["id"] for card in self.spell_system["cards"]]], device=choice.device)
+            return {"combat_action": combat.argmax(-1), "spell_action": choice,
+                    "spell_card_id": ids[choice]}, memory
         logits, memory = self.step_logits(obs, memory)
         return logits.argmax(-1), memory
 
     @torch.no_grad()
-    def step_logits(self, obs, memory=None):
+    def step_logits(self, obs, memory=None, *, return_spell=False):
         """单帧接口保留此前 31 个 228D 状态，与当前帧组成 32 帧窗口。"""
         state = self.state_features(obs)
         if state.ndim != 2:
@@ -191,4 +222,6 @@ class BCNetwork(nn.Module):
         history = state[:, None] if memory is None else torch.cat((memory, state[:, None]), dim=1)
         temporal = self.tcn(history)[:, -1]
         current = self.current_encoder.forward_features(state)
-        return self._fuse(current, temporal, self.encode_objects(obs)), history[:, -(self.tcn.context_frames-1):].detach()
+        result = self._fuse(current, temporal, self.encode_objects(obs), obs.get("spell_available_mask"),
+                            return_spell=return_spell)
+        return result, history[:, -(self.tcn.context_frames-1):].detach()

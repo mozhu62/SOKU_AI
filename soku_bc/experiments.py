@@ -31,6 +31,9 @@ def comparison_conditions(config, split_hash, normalization):
                   "frozen_active_modules": sorted(set(training["frozen_modules"]) & set(active_modules(config["model"]))),
                   "normalization_hash": hashlib.sha256(json.dumps(normalization, sort_keys=True).encode()).hexdigest()}
     conditions["cache_gb"] = config["data"]["cache_gb"]
+    if config.get("spell_system", {}).get("enabled"):
+        conditions["spell_system"] = config["spell_system"]
+        conditions["spell_training"] = config["spell_training"]
     return conditions, hashlib.sha256(json.dumps(conditions, sort_keys=True).encode()).hexdigest()
 
 

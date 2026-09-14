@@ -373,8 +373,15 @@ class Runtime:
             if self.stop_event.is_set():
                 raise InterruptedError("数据准备已取消")
             self.learner = Learner(self.config)
+            initial = self.config.get("spell_system", {}).get("init_combat_from")
+            if initial and not package:
+                source = checkpoint.initialize_combat(self.learner.model, resolve(initial))
+                if source["normalization"] != self.store.normalization:
+                    raise ValueError("迁移 Combat 要求相同训练集归一化；当前数据/划分已改变，不能静默沿用旧权重配新尺度")
+                if source["config"]["data"]["vertical_positive_is_down"] != self.config["data"]["vertical_positive_is_down"]:
+                    raise ValueError("迁移不能修改按键轴方向")
             LOGGER.info("BC %s；完整 144 类按键，标签平滑=%s，无奖励和目标网络",
-                        "恢复 checkpoint" if package else "随机初始化",
+                        "恢复 checkpoint" if package else "从旧 Combat 初始化符卡分支" if initial else "随机初始化",
                         self.config["training"]["label_smoothing"])
             if package:
                 for key in ("model", "seed"):

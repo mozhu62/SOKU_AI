@@ -12,3 +12,6 @@ dependencies = ["numpy>=1.26", "pandas>=2.1", "PyYAML>=6", "torch>=2.3",
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["soku_bc*"]
+
+[tool.setuptools.package-data]
+soku_bc = ["catalogs/*.json"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import time
+import threading
 from collections import Counter
 from datetime import datetime
 from uuid import uuid4
@@ -42,7 +43,7 @@ class EvaluationStatistics:
                          "temporal": copy.deepcopy(model.model.spec["temporal"]),
                          "temporal_capture_policy": f"liveframes_v1_real{model.tcn_window.size}_no_padding",
                          "model_inputs": copy.deepcopy(model.model.spec["inputs"]),
-                         "device": str(model.device), "action_selection": model.action_selection,
+                         "device": model.device_label, "action_selection": model.action_selection,
                          "inference_precision": model.precision,
                          "streaming_tcn": model.tcn_window.streaming,
                          "output_semantics": "categorical_logits",
@@ -56,10 +57,18 @@ class EvaluationStatistics:
         self.last_terminal = None
         self.last_action = None
         self.inference_ms = []
+        self.timing_samples = []
         self.session_actions = Counter()
         self.sent = 0
         self.completed = 0
         self.observed_modes = set()
+        self.timing_lock = threading.Lock()
+        self.timing_stop = threading.Event()
+        self.timing_cached = {'inference_breakdown': [], 'inference_p50_ms': None,
+                              'inference_p95_ms': None, 'inference_attempts_window': 0}
+        self.timing_thread = threading.Thread(target=self._timing_worker, daemon=True,
+                                              name='bc-live-diagnostics')
+        self.timing_thread.start()
 
     def players(self, payload):
         return (payload.left, payload.right) if self.side == "left" else (payload.right, payload.left)
@@ -153,9 +162,6 @@ class EvaluationStatistics:
     def decision(self, prediction):
         self.sent += 1
         self.session_actions[prediction["joint_action_id"]] += 1
-        self.inference_ms.append(prediction["inference_ms"])
-        if len(self.inference_ms) > 5000:
-            del self.inference_ms[:1000]
         if self.current is not None:
             self.current["decisions"] += 1
             self.current["joint_counts"][prediction["joint_action_id"]] += 1
@@ -164,6 +170,7 @@ class EvaluationStatistics:
         eligible = [row for row in self.rows if row["eligible"]]
         differences = [row["damage_difference"] for row in eligible]
         return {"completed": len(eligible), "target": self.target, "fragments": len(self.rows) - len(eligible),
+                **self.timing_cached,
                 "observed_modes": [list(pair) for pair in sorted(self.observed_modes)],
                 "wins": sum(row["result"] == "win" for row in eligible),
                 "losses": sum(row["result"] == "loss" for row in eligible),
@@ -171,14 +178,66 @@ class EvaluationStatistics:
                 "win_rate": sum(row["result"] == "win" for row in eligible) / len(eligible) if eligible else None,
                 "mean_damage_difference": float(np.mean(differences)) if differences else None,
                 "std_damage_difference": float(np.std(differences)) if differences else None,
-                "inference_p50_ms": float(np.percentile(self.inference_ms, 50)) if self.inference_ms else None,
-                "inference_p95_ms": float(np.percentile(self.inference_ms, 95)) if self.inference_ms else None,
                 "decisions": self.sent, "joint_counts": dict(self.session_actions),
                 "neutral_fraction": self.session_actions[NEUTRAL_ACTION_ID] / self.sent if self.sent else None,
                 "report_directory": str(self.directory)}
 
+    def inference_attempt(self, prediction):
+        # 控制线程只追加有界记录；包括过期、未发送的推理，不再只看成功发键样本。
+        row = {**prediction.get('timing', {}), 'total_ms': prediction['inference_ms'],
+               'status': prediction.get('execution_status', 'unknown'),
+               'tcn_path': prediction.get('tcn_backend', 'unknown'),
+               'loop': dict(prediction.get('loop_timing', {})),
+               'frames': prediction.get('tcn_computed_frames', 0),
+               'rebuild': prediction.get('tcn_cache_rebuilt', False)}
+        with self.timing_lock:
+            self.timing_samples.append(row)
+            self.timing_samples = self.timing_samples[-300:]
+
+    def _refresh_timing(self):
+        with self.timing_lock:
+            samples = list(self.timing_samples)
+        values = [row['total_ms'] for row in samples]
+        # 重计算在锁外，发布整份新结果；控制线程不会等待 percentile。
+        self.timing_cached = {'inference_breakdown': self.timing_summary(samples),
+                              'inference_attempts_window': len(samples),
+                              'inference_status_counts': dict(Counter(row['status'] for row in samples)),
+                              'loop_timing': {key: {'count': len(items),
+                                  'p50': float(np.percentile(items, 50)),
+                                  'p95': float(np.percentile(items, 95))}
+                                  for key in {k for row in samples for k in row['loop']}
+                                  if (items := [row['loop'][key] for row in samples if key in row['loop']])},
+                              'inference_p50_ms': float(np.percentile(values, 50)) if values else None,
+                              'inference_p95_ms': float(np.percentile(values, 95)) if values else None}
+
+    def _timing_worker(self):
+        while not self.timing_stop.wait(1.0):
+            self._refresh_timing()
+
+    def close(self):
+        self.timing_stop.set()
+        self.timing_thread.join()
+        self._refresh_timing()
+
+    def timing_summary(self, samples):
+        result = []
+        groups = sorted({(row['rebuild'], row['frames']) for row in samples})
+        for rebuild, frames in groups:
+            rows = [row for row in samples if row['rebuild'] == rebuild and row['frames'] == frames]
+            for kind in ('host_ms', 'cuda_timeline_ms'):
+                keys = sorted({key for row in rows for key in row.get(kind, {})})
+                for key in keys:
+                    values = [row[kind][key] for row in rows if key in row.get(kind, {})]
+                    result.append({'stage': f'{key} [{frames}帧]', 'kind': kind, 'rebuild': rebuild,
+                                   'count': len(values), 'p50': float(np.percentile(values, 50)),
+                                   'p95': float(np.percentile(values, 95))})
+        return result
+
     def save(self):
         atomic_json(self.directory / "summary.json", self.summary())
+        with self.timing_lock:
+            samples = list(self.timing_samples)
+        atomic_json(self.directory / 'inference_timing.json', samples)
 
     def snapshot(self):
         return {"summary": self.summary(), "current_round": copy.deepcopy(self.current),

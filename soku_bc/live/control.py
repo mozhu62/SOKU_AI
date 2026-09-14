@@ -139,6 +139,22 @@ class SafeControl:
         direction, buttons = to_controller(joint_action_id)
         return self.apply(direction, buttons)
 
+    def apply_card_command(self, command):
+        # 使用游戏原生组合键：A+B 切卡，B+C 用卡；宏独占本次按键并负责释放。
+        names = {'change_card': ('melee', 'light_projectile'),
+                 'use_card': ('light_projectile', 'heavy_projectile'), 'release': ()}
+        if command not in names:
+            raise ValueError('未知卡牌宏命令')
+        with self.lock:
+            if not self._ready():
+                return False
+            try:
+                self._set_keys({self.keys[name] for name in names[command]})
+            except OSError:
+                self.pause('卡牌宏 SendInput 失败，已暂停')
+                raise
+            return True
+
     def menu(self, pressed):
         with self.lock:
             if pressed and not self._ready():

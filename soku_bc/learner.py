@@ -16,6 +16,7 @@ from .action_diagnostics import (
 )
 from .keyframes import build_changepoint_mask
 from .palr import sampled_palr
+from .spells import spell_loss, spell_counts, spell_metrics, training_settings
 
 
 def device_for(name):
@@ -104,6 +105,10 @@ def classification_metrics(parts, previous_joint_action_id=None):
                   joint_correct=torch.bincount(labels[correct], minlength=ACTION_COUNT).cpu().tolist())
     result["joint_data_top"] = frequency_rows(result["joint_data"])
     result["joint_pred_top"] = frequency_rows(result["joint_pred"])
+    if "spell_parts" in parts:
+        counts = spell_counts(parts["spell_parts"])
+        result.update(spell_counts=counts, spell_catalog=parts["spell_catalog"])
+        result.update(spell_metrics(counts, parts["spell_catalog"]))
     if "is_changepoint" in parts or previous_joint_action_id is not None:
         if "is_changepoint" in parts:
             valid = parts["valid_mask"]
@@ -151,6 +156,8 @@ def aggregate_metrics(rows):
         raise ValueError("验证没有有效样本")
     result = {}
     for key in rows[0]:
+        if key.startswith("spell_") or key in ("active_none_count", "active_none_ratio", "predicted_spell_rate", "expert_spell_rate"):
+            continue
         if key.startswith("validation_palr_") or key == "validation_hscic":
             continue
         if key in ("samples", "joint_data_top", "joint_pred_top", *BATCH_COUNT_KEYS, *BATCH_RATE_KEYS,
@@ -185,6 +192,12 @@ def aggregate_metrics(rows):
         for key in ("eligible_samples", "sampled_samples", "skipped_batches"):
             name = "validation_palr_" + key
             result[name] = sum(row.get(name, 0) for row in rows)
+    if "spell_counts" in rows[0]:
+        counts = {key: sum(row["spell_counts"][key] for row in rows)
+                  for key in ("masked", "weight_sum", "weighted_loss_sum")}
+        counts["matrix"] = np.sum([row["spell_counts"]["matrix"] for row in rows], axis=0).tolist()
+        result.update(spell_counts=counts, spell_catalog=rows[0]["spell_catalog"])
+        result.update(spell_metrics(counts, rows[0]["spell_catalog"]))
     return result
 
 
@@ -200,7 +213,7 @@ class Learner:
             torch.cuda.manual_seed_all(config["seed"])
             torch.set_float32_matmul_precision("high")
             torch.backends.cudnn.benchmark = True
-        self.model = BCNetwork(config["model"]).to(self.device)
+        self.model = BCNetwork(config["model"], spell_system=config.get("spell_system")).to(self.device)
         cfg = config["training"]
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
         self.amp = cfg["amp"] and self.device.type == "cuda"
@@ -211,6 +224,8 @@ class Learner:
         self.config = config
         cfg = config["training"]
         active = set(active_modules(config["model"]))
+        if self.model.spell_enabled:
+            active.add("spell_branch")
         for name, module in self.model.module_groups().items():
             module.requires_grad_(name in active and name not in cfg["frozen_modules"])
             for parameter in module.parameters():
@@ -221,7 +236,8 @@ class Learner:
     def losses(self, batch, *, measure_palr=False, palr_generator=None):
         cfg = self.config["training"]
         settings = palr_settings(self.config.get("palr"))
-        use_aux = settings["enabled"] or measure_palr
+        use_palr = settings["enabled"] or measure_palr
+        use_aux = use_palr or self.model.spell_enabled
         with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.amp):
             if use_aux:
                 logits, aux = self.model(batch["observation"], cfg["burn_in"], batch["burn_lengths"], return_aux=True)
@@ -232,16 +248,27 @@ class Learner:
                                               previous_joint_action_id=supervised_previous_actions(batch, cfg["burn_in"]),
                                               keyframe_weighting=self.config.get("keyframe_weighting"))
         parts["loss_keyframe_bc"] = bc_loss
-        if not use_aux:
+        total = bc_loss
+        if self.model.spell_enabled:
+            required = {"spell_target", "spell_supervision_mask"}
+            if required - batch.keys():
+                raise ValueError("批次缺少符卡确认监督，不能自动补 NONE")
+            available = batch["observation"]["spell_available_mask"][:, cfg["burn_in"]:]
+            extra, details = spell_loss(aux["spell_logits"], batch["spell_target"], available,
+                                        batch["spell_supervision_mask"], batch["mask"],
+                                        self.config.get("spell_training"))
+            total = total + training_settings(self.config.get("spell_training"))["loss_weight"] * extra
+            parts.update(spell_parts=details, spell_catalog=self.model.spell_system["cards"])
+        if not use_palr:
             # 关闭时不抽样、不建核、不加零项；返回原 CE 张量，保留原数值和 RNG 路径。
-            return bc_loss, parts
+            return total, parts
         if "previous_expert_action_id" not in batch:
             raise ValueError("PALR 缺少 Dataset 的 previous_expert_action_id 监督，禁止使用 observation 历史代替")
         temporal = aux["temporal_feature"]
         regularizer, stats = sampled_palr(temporal, batch["joint_action_id"], batch["previous_expert_action_id"],
                                           batch["mask"], settings, generator=palr_generator)
         parts.update(palr_stats=stats, loss_palr=regularizer, temporal_feature=temporal)
-        total = bc_loss + settings["alpha"] * regularizer if settings["enabled"] else bc_loss
+        total = total + settings["alpha"] * regularizer if settings["enabled"] else total
         return total, parts
 
     def train_batch(self, raw_batch, diagnostics=False):

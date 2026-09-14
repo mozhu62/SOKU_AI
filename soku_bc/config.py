@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 import yaml
+from .spells import SYSTEM_DEFAULTS, TRAINING_DEFAULTS, system_settings, training_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 NETWORK_VERSION = "soku_bc_tcn32_joint144_v1"
@@ -21,10 +22,15 @@ KEYFRAME_DEFAULTS = {"enabled": False, "changepoint_weight": 4.0}
 PALR_DEFAULTS = {"enabled": False, "alpha": 0.1, "sample_size": 256,
                  "feature_kernel": "rbf", "action_kernel": "categorical", "regularization": 0.001}
 DEFAULTS = {
+    "spell_system": SYSTEM_DEFAULTS,
+    "spell_training": TRAINING_DEFAULTS,
     "seed": 42,
     "data": {"directory": "../soku_cql/data/replay_shards_resources_v4",
              "split_file": "data/train_val_split_resources_v4.json",
-             "train_fraction": 0.8, "cache_gb": 4.0, "vertical_positive_is_down": True},
+             "train_fraction": 0.8, "cache_gb": 4.0, "vertical_positive_is_down": True,
+             "split_mode": "legacy", "split_character_id": 0,
+             "player_validation_fraction": 0.1, "player_validation_max": 30,
+             "player_aliases_file": None},
     "model": MODEL_DEFAULTS,
     "keyframe_weighting": KEYFRAME_DEFAULTS,
     "palr": PALR_DEFAULTS,
@@ -111,6 +117,8 @@ def palr_settings(settings=None):
 
 
 def validate(config: dict) -> dict:
+    config["spell_system"] = system_settings(config.get("spell_system"))
+    config["spell_training"] = training_settings(config.get("spell_training"))
     config["keyframe_weighting"] = keyframe_weighting_settings(config.get("keyframe_weighting"))
     config["palr"] = palr_settings(config.get("palr"))
     # 结构字段统一补齐后再校验；旧 GRU 配置会因模式或宽度不兼容而被明确拒绝。
@@ -136,10 +144,12 @@ def validate(config: dict) -> dict:
     if type(cfg["amp"]) is not bool or type(cfg["prefetch_batches"]) is not int or not 1 <= cfg["prefetch_batches"] <= 8:
         raise ValueError("amp 必须为布尔值，prefetch_batches 必须在 1 到 8 之间")
     frozen = cfg["frozen_modules"]
-    if (not isinstance(frozen, list) or any(x not in MODULES for x in frozen)
-            or set(active_modules(config["model"])) <= set(frozen)):
+    modules = (*MODULES, "spell_branch") if config["spell_system"]["enabled"] else MODULES
+    if (not isinstance(frozen, list) or any(x not in modules for x in frozen)
+            or set(modules) <= set(frozen)):
         raise ValueError("冻结模块无效或全部模块均被冻结")
-    if config["data"]["train_fraction"] != 0.8:
+    from .player_split import split_settings
+    if split_settings(config) is None and config["data"]["train_fraction"] != 0.8:
         raise ValueError("本版本固定按整份 REP 进行 8:2 划分")
     cache_gb = config["data"]["cache_gb"]
     if type(cache_gb) not in (int, float) or not math.isfinite(cache_gb) or not 0.1 <= cache_gb <= 1024:

@@ -1,0 +1,69 @@
+{
+  "files": 3000,
+  "confirmed_protocol_files": 0,
+  "legacy_files": 3000,
+  "raw_hand_resource_files": 3000,
+  "raw_use_button_files": 3000,
+  "missing_examples": [
+    {
+      "file": "1005966.npz",
+      "missing": [
+        "spell_available_mask",
+        "spell_event_card_id",
+        "spell_event_valid",
+        "spell_game_frame",
+        "spell_observation_valid"
+      ]
+    },
+    {
+      "file": "1005971.npz",
+      "missing": [
+        "spell_available_mask",
+        "spell_event_card_id",
+        "spell_event_valid",
+        "spell_game_frame",
+        "spell_observation_valid"
+      ]
+    },
+    {
+      "file": "1005976.npz",
+      "missing": [
+        "spell_available_mask",
+        "spell_event_card_id",
+        "spell_event_valid",
+        "spell_game_frame",
+        "spell_observation_valid"
+      ]
+    },
+    {
+      "file": "1005981.npz",
+      "missing": [
+        "spell_available_mask",
+        "spell_event_card_id",
+        "spell_event_valid",
+        "spell_game_frame",
+        "spell_observation_valid"
+      ]
+    },
+    {
+      "file": "1005983.npz",
+      "missing": [
+        "spell_available_mask",
+        "spell_event_card_id",
+        "spell_event_valid",
+        "spell_game_frame",
+        "spell_observation_valid"
+      ]
+    }
+  ],
+  "passive_none": null,
+  "active_none": null,
+  "spell_use": null,
+  "cards": null,
+  "examples": {
+    "passive_none": [],
+    "active_none": [],
+    "spell_use": []
+  },
+  "complete_dataset_statistics": false
+}

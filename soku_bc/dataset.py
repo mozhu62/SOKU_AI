@@ -30,6 +30,8 @@ def digest(value):
 
 
 def split_replays(config, progress, cancelled=lambda: False):
+    from .player_split import split_settings, player_partition
+    settings = split_settings(config)
     root, path = resolve(config["data"]["directory"]), resolve(config["data"]["split_file"])
     files = sorted(root.rglob("*.npz"))
     if len(files) < 2:
@@ -46,8 +48,16 @@ def split_replays(config, progress, cancelled=lambda: False):
         result = json.loads(path.read_text(encoding="utf-8"))
         if result.get("files") != entries or result.get("seed") != config["seed"]:
             raise ValueError("数据或 seed 与固定划分不一致；请为新数据指定新的 split_file 和输出目录")
-        if result.get("train_fraction") != 0.8:
+        if result.get('player_split') != settings:
+            raise ValueError('玩家划分规则或小号映射已变化，请使用新的 split_file 和输出目录')
+        if settings is None and result.get("train_fraction") != 0.8:
             raise ValueError("已保存的数据划分不是 8:2")
+    elif settings is not None:
+        result = {'version': 2, 'seed': config['seed'], 'files': entries,
+                  'player_split': settings,
+                  **player_partition(root, entries, settings, config['seed'], cancelled)}
+        result['sha256'] = digest(result)
+        atomic_json(path, result)
     else:
         # 完全相同的 NPZ 按内容哈希归为一组，防止复制文件混入另一集合。
         groups = {}
@@ -98,7 +108,10 @@ class Moments:
         return {"mean": self.mean.tolist(), "std": np.where(std < 1e-6, 1.0, std).tolist(), "count": self.count}
 
 
-def read_shard(path: Path, positive_down: bool):
+def read_shard(path: Path, positive_down: bool, spell_system=None):
+    from .spells import system_settings
+    from .spell_data import prepare_spell_data
+    spell = system_settings(spell_system)
     try:
         with np.load(path, allow_pickle=False) as source:
             meta = json.loads(str(source["metadata_json"].item()))
@@ -111,7 +124,8 @@ def read_shard(path: Path, positive_down: bool):
             ignored = {"metadata_json", "rewards"} | {
                 f"{side}_{suffix}" for side in ("self", "opponent") for suffix in IGNORED_RESOURCE_SUFFIXES
             }
-            shard = {key: source[key] for key in source.files if key not in ignored}
+            shard = {key: source[key] for key in source.files if key not in ignored
+                     and (spell["enabled"] or not key.startswith("spell_"))}
         count = len(shard["episode_id"])
         if meta.get("action_schema", RAW_ACTION_SCHEMA) != RAW_ACTION_SCHEMA:
             raise ValueError("action schema 不兼容：分片声明了不同的动作语义")
@@ -184,6 +198,8 @@ def read_shard(path: Path, positive_down: bool):
         terminal = shard["terminated"].astype(bool)
         # 沿用 NPZ 的动作对齐规则；终局后的观测不能作为下一段专家动作起点。
         valid[1:] &= ~terminal[:-1]
+        if spell["enabled"]:
+            prepare_spell_data(shard, meta, valid, spell)
         # 从完整专家标签及既有连续性规则生成监督元数据，而非从 observation 反取 PALR 标签。
         # 单独复制网络输入，防止后续输入侧变换影响真实上一帧专家监督。
         shard["previous_expert_action_id"], shard["previous_action_duration"] = previous_actions(
@@ -275,7 +291,8 @@ class ReplayStore:
                 self.cache.move_to_end(name)
                 return self.cache[name]
             self.misses += 1
-        shard = read_shard(self.root / name, self.config["data"]["vertical_positive_is_down"])
+        shard = read_shard(self.root / name, self.config["data"]["vertical_positive_is_down"],
+                           self.config.get("spell_system"))
         size = sum(value.nbytes for value in shard.values())
         with self.lock:
             if name in self.cache:
@@ -335,6 +352,9 @@ class ReplayStore:
                             "joint_action_id": shard["joint_action_id"][labels],
                             "previous_expert_action_id": shard["previous_expert_action_id"][labels],
                             "mask": main < ends[:, None]})
+            if "spell_target" in shard:
+                batches[-1].update(spell_target=shard["spell_target"][labels],
+                                   spell_supervision_mask=shard["spell_supervision_mask"][labels])
         result = {key: np.concatenate([item[key] for item in batches]) for key in batches[0] if key != "observation"}
         result["observation"] = {key: np.concatenate([item["observation"][key] for item in batches])
                                  for key in batches[0]["observation"]}
@@ -346,6 +366,8 @@ class ReplayStore:
                   "state_categorical": shard["state_categorical"][indices].astype(np.int64),
                   "tactical_state": shard["tactical_state"][indices].astype(np.float32)}
         result.update(resource_observation(shard, indices))
+        if "spell_available_mask" in shard:
+            result["spell_available_mask"] = shard["spell_available_mask"][indices]
         result["previous_joint_action_id"] = shard["previous_joint_action_id"][indices]
         result["previous_action_duration"] = shard["previous_action_duration"][indices]
         mean, std = self.norm["optional_state"]
