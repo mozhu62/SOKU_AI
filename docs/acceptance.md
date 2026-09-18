@@ -23,7 +23,7 @@
 
 ## Checkpoint
 
-1. 新模型版本为 soku_bc_tcn32_joint144_v1。
+1. 新模型版本为 `soku_bc_tcn32_joint144_weather9_v2`。
 2. 同版本 checkpoint 严格恢复模型、优化器、scaler、RNG、split hash 和 normalization。
 3. 旧 Joint432、旧 GRU、旧 TCN、CQL/PPO/IQL/DQfD 均明确拒绝。
 4. 不允许静默部分加载或覆盖现有模型目录。

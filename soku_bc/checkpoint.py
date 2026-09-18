@@ -21,11 +21,11 @@ def load(path: Path):
     if not isinstance(package, dict) or package.get("algorithm") != "bc":
         raise ValueError("仅接受 BC checkpoint；CQL/PPO/IQL 权重不能作为 BC 续训模型，请从随机初始化开始")
     version = package.get("network_version")
-    if version not in (NETWORK_VERSION, "soku_bc_tcn256_joint144_v1",
-                       NETWORK_VERSION + "_spell_v3", "soku_bc_tcn256_joint144_v1_spell_v3"):
+    if version not in (NETWORK_VERSION, "soku_bc_tcn256_joint144_weather9_v2",
+                       NETWORK_VERSION + "_spell_v3", "soku_bc_tcn256_joint144_weather9_v2_spell_v3"):
         raise ValueError(
             "BC checkpoint schema 不兼容：当前版本为 228D 状态、256D 当前编码和 Joint144 输出，"
-            "卡牌双头使用 spell_v3 原始可用集合拼接协议；旧 spell_v2 残差模型不能续训或推理。"
+            "天气已压缩为 normal+八种特殊天气；旧天气词表和旧 spell_v2 模型不能续训或推理。"
             "请去掉 --resume，从随机初始化开始并使用新输出目录"
         )
     if package.get("spec", {}).get("network_version") != version:

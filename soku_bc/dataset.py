@@ -20,6 +20,7 @@ from .resources import (
 )
 from .storage import atomic_json
 from .action_diagnostics import DIAGNOSTIC_VERSION, dataset_action_counts, merge_dataset_counts
+from .weather import compress_weather
 
 
 LOGGER = logging.getLogger(__name__)
@@ -365,8 +366,11 @@ class ReplayStore:
 
     def observation(self, shard, indices):
         mean, std = self.norm["state"]
+        categorical = shard["state_categorical"][indices].astype(np.int64)
+        # 原始 NPZ 保持 0..21；训练入口按与 IQL 完全相同的规则压缩。
+        categorical[..., -1] = compress_weather(categorical[..., -1])
         result = {"state_continuous": np.clip((shard["state_continuous"][indices] - mean) / std, -10, 10),
-                  "state_categorical": shard["state_categorical"][indices].astype(np.int64),
+                  "state_categorical": categorical,
                   "tactical_state": shard["tactical_state"][indices].astype(np.float32)}
         result.update(resource_observation(shard, indices))
         if "spell_available_mask" in shard:

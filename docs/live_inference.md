@@ -9,7 +9,7 @@ npm --prefix web run build
 python scripts/play.py
 ~~~
 
-打开 http://localhost:8797/，选择 soku_bc_tcn32_joint144_v1 checkpoint，加载后进入对战并点击继续。
+打开 http://localhost:8797/，选择 `soku_bc_tcn32_joint144_weather9_v2` checkpoint，加载后进入对战并点击继续。
 
 ## 模型加载
 

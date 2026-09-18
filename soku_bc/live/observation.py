@@ -7,6 +7,7 @@ from .resources import build_resources
 from .input_history import ControllerHistory
 from ..resources import normalization_arrays
 from ..action_space import ACTION_SCHEMA
+from ..weather import compress_weather
 
 
 class ObservationBuilder:
@@ -70,7 +71,7 @@ class ObservationBuilder:
         self.observe_inputs(payload)
         self.resource_summary = None
         player, opponent = self.players(payload)
-        continuous, categorical = {}, {"active_weather": int(payload.activeWeather)}
+        continuous, categorical = {}, {"active_weather": compress_weather(int(payload.activeWeather))}
         for side, entity in (("self", player), ("opponent", opponent)):
             for name, field in (("position_x", "positionX"), ("position_y", "positionY"),
                                 ("speed_x", "speedX"), ("speed_y", "speedY"), ("direction", "direction"),
